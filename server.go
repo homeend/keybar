@@ -208,13 +208,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		out := []item{}
 		for _, l := range m.Layouts {
-			n := 0
-			for _, k := range l.Keys {
-				if k.Action.Type != "none" && k.Action.Type != "" {
-					n++
-				}
-			}
-			out = append(out, item{l.ID, l.Name, n})
+			out = append(out, item{l.ID, l.Name, assignedKeys(l)})
 		}
 		writeJSON(w, map[string]any{"os": m.OS, "layouts": out})
 	})
@@ -258,7 +252,16 @@ func (s *Server) Handler() http.Handler {
 			httpErr(w, http.StatusConflict, err)
 			return
 		}
-		writeJSON(w, map[string]any{"config": s.store.Get(), "report": rep, "first": imported[0].ID})
+		// A machine whose active layout does nothing yet (fresh install) starts
+		// using the copy right away; otherwise the person picks when to switch.
+		activated := false
+		if l := cur.layout(cur.ActiveLayout); l == nil || assignedKeys(*l) == 0 {
+			if _, err := s.store.SwitchLayout(imported[0].ID); err == nil {
+				activated = true
+				s.bus.Publish(BusEvent{Type: "layout", Layout: imported[0].ID})
+			}
+		}
+		writeJSON(w, map[string]any{"config": s.store.Get(), "report": rep, "first": imported[0].ID, "activated": activated})
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.status()) })
 	mux.HandleFunc("POST /api/learn", func(w http.ResponseWriter, r *http.Request) {
@@ -386,4 +389,15 @@ type App struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Icon string `json:"icon"`
+}
+
+// assignedKeys counts the keys in a layout that do something.
+func assignedKeys(l Layout) int {
+	n := 0
+	for _, k := range l.Keys {
+		if k.Action.Type != "none" && k.Action.Type != "" {
+			n++
+		}
+	}
+	return n
 }

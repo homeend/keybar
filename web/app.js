@@ -556,12 +556,17 @@ if (RECEIVER) $("#learnAll").hidden = true;
 
 // ---------- live events ----------
 function addLog(ev) {
-  const b = ev.binding && byId(ev.binding);
+  // Describe the key in the layout that actually ran it, not the one being edited.
+  const slot = ev.binding && cfg.slots.find(s => s.id === ev.binding);
+  const L = cfg.layouts.find(l => l.id === ev.layout) || curLayout();
+  const k = slot && L.keys[slot.id];
+  const b = k && { label: k.label, action: k.action, trigger: slot.trigger };
+  const where = L.id !== curLayout().id || cfg.layouts.length > 1 ? " · layout “" + L.name + "”" : "";
   const li = el("li", {},
     el("time", {}, new Date().toLocaleTimeString()),
     el("span", { class: "chip" }, ev.trigger ? prettyTrigger(ev.trigger) : "🖧"),
     ev.to ? el("span", {}, "→ sent to ", el("b", {}, ev.to), el("span", { class: "muted" }, " (runs with its layout)"))
-    : b ? el("span", {}, "→ ", el("b", {}, b.label), el("span", { class: "muted" }, " · " + summary(b) + (ev.from ? " · from " + ev.from : ""))) : el("span", { class: "muted" }, "not assigned"));
+    : b ? el("span", {}, "→ ", el("b", {}, b.label), el("span", { class: "muted" }, " · " + summary(b) + where + (ev.from ? " · from " + ev.from : ""))) : el("span", { class: "muted" }, "not assigned"));
   const log = $("#log");
   log.prepend(li);
   while (log.children.length > 60) log.lastChild.remove();
@@ -700,12 +705,14 @@ $("#copyGo").onclick = async () => {
     await save(true);
     const r = await api("POST", "/api/net/import", { id: copyFrom, layouts: ids });
     cfg = r.config; editLayout = r.first; selected = null;
+    if (r.activated) cfg.active_layout = r.first;
     renderAll();
     $("#copyDlg").close();
     const rp = r.report;
     const n = (x, w) => `${x} ${w}${x === 1 ? "" : "s"}`;
     toast(`Copied ${n(rp.layouts, "layout")}: ${n(rp.copied, "key")} as-is, ${rp.converted} converted` +
-      (rp.attention ? `, ${rp.attention} need attention (⚠)` : "") + ". Use “Make active” when ready.", 7000);
+      (rp.attention ? `, ${rp.attention} need attention (⚠)` : "") +
+      (r.activated ? ". It's now the active layout." : ". It isn't active yet: click “Make active” to use it."), 8000);
   } catch (e) { toast(e.message); syncCopyBtn(); }
 };
 

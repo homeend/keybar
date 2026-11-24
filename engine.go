@@ -216,7 +216,7 @@ func (e *Engine) press(sig string, passDown, passUp func()) *activeTrigger {
 		}
 		return &activeTrigger{}
 	}
-	ev := BusEvent{Type: "trigger", Trigger: sig, Binding: slot.ID}
+	ev := BusEvent{Type: "trigger", Trigger: sig, Binding: slot.ID, Layout: e.store.Get().ActiveLayout}
 	if e.router != nil {
 		if t := e.router.Target(); t != "" {
 			if k, _ := e.store.ActiveKey(slot.ID); k.Action.Type != "machine" {

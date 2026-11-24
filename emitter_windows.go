@@ -66,8 +66,18 @@ type mouseInput struct {
 	extra uint64
 }
 
+var lastInputErr string
+
 func sendInput(p unsafe.Pointer) {
-	procSendInput.Call(1, uintptr(p), 40)
+	n, _, err := procSendInput.Call(1, uintptr(p), 40)
+	if n == 0 { // blocked (e.g. the foreground app runs as administrator, or the screen is locked)
+		if msg := err.Error(); msg != lastInputErr {
+			lastInputErr = msg
+			log.Printf("SendInput failed: %v", err)
+		}
+	} else {
+		lastInputErr = ""
+	}
 }
 
 type vk struct {

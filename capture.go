@@ -94,4 +94,3 @@ func captureShortcut(ctx context.Context, skip DeviceMatch) string {
 		}
 	}
 }
-

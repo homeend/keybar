@@ -12,12 +12,12 @@ import (
 
 // shortcutEquivalents: the same gesture on each OS.
 var shortcutEquivalents = []map[string]string{
-	{"linux": "super", "windows": "super+tab"},                         // overview / task view
-	{"linux": "super+pageup", "windows": "ctrl+super+left"},            // previous workspace / desktop
-	{"linux": "super+pagedown", "windows": "ctrl+super+right"},         // next workspace / desktop
-	{"linux": "print", "windows": "super+shift+s"},                     // screenshot
-	{"linux": "super+a", "windows": "super+a"},                         // quick settings (same)
-	{"linux": "super+alt+left", "windows": "ctrl+super+left"},          // alt. workspace keys
+	{"linux": "super", "windows": "super+tab"},                 // overview / task view
+	{"linux": "super+pageup", "windows": "ctrl+super+left"},    // previous workspace / desktop
+	{"linux": "super+pagedown", "windows": "ctrl+super+right"}, // next workspace / desktop
+	{"linux": "print", "windows": "super+shift+s"},             // screenshot
+	{"linux": "super+a", "windows": "super+a"},                 // quick settings (same)
+	{"linux": "super+alt+left", "windows": "ctrl+super+left"},  // alt. workspace keys
 	{"linux": "super+alt+right", "windows": "ctrl+super+right"},
 }
 

@@ -217,7 +217,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		return &Msg{T: "layouts", OS: hostOS(), Layouts: c.Layouts}
 	case "down":
 		key := peerID + "/" + m.Slot
-		r.bus.Publish(BusEvent{Type: "trigger", Binding: m.Slot, From: r.name(peerID)})
+		r.bus.Publish(BusEvent{Type: "trigger", Binding: m.Slot, From: r.name(peerID), Layout: r.e.store.Get().ActiveLayout})
 		at := r.e.runSlot(m.Slot, func() {}, func() {}) // factory keys only exist on the host
 		r.rmu.Lock()
 		old := r.remote[key]
