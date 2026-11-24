@@ -18,7 +18,7 @@ type DeviceMatch struct {
 }
 
 // Action is what a button does. Type is one of:
-// keys, app, command, mouse, text, passthrough, none.
+// keys, app, command, mouse, text, layout, machine, passthrough, none.
 type Action struct {
 	Type           string `json:"type"`
 	Keys           string `json:"keys,omitempty"`            // "ctrl+shift+t" or "ctrl+c, ctrl+v"
@@ -30,19 +30,45 @@ type Action struct {
 	Amount         int    `json:"amount,omitempty"`          // scroll steps, or dx for move
 	DY             int    `json:"dy,omitempty"`
 	Text           string `json:"text,omitempty"`
+	Layout         string `json:"layout,omitempty"`  // for "layout": a layout ID, or "next" / "prev"
+	Machine        string `json:"machine,omitempty"` // for "machine": "pick", "next", "self" or a paired machine's ID
 }
 
-type Binding struct {
+// Slot is one physical control on the Keydial: where it is drawn and which
+// factory signal ("trigger") the device sends for it. Slots belong to the
+// machine the device is plugged into; layouts refer to them by ID.
+type Slot struct {
 	ID      string `json:"id"`
-	Label   string `json:"label"`
-	Icon    string `json:"icon,omitempty"` // emoji shown on the key
-	Trigger string `json:"trigger"`        // what the device sends, e.g. "KEY_LEFTCTRL+KEY_Z"
-	Action  Action `json:"action"`
-	Group   string `json:"group"` // "dial" | "keys"
+	Group   string `json:"group"`   // "dial" | "keys"
+	Trigger string `json:"trigger"` // what the device sends, e.g. "KEY_LEFTCTRL+KEY_Z"
 	X       int    `json:"x"`
 	Y       int    `json:"y"`
 	W       int    `json:"w"`
 	H       int    `json:"h"`
+}
+
+// Key is what one slot does in one layout.
+type Key struct {
+	Label  string `json:"label"`
+	Icon   string `json:"icon,omitempty"` // emoji shown on the key
+	Action Action `json:"action"`
+	Note   string `json:"note,omitempty"` // ⚠ copying from another machine couldn't keep this; cleared when edited
+	Info   string `json:"info,omitempty"` // ℹ copying converted this for this OS
+}
+
+// Layout is a named set of key assignments; one is active at a time.
+type Layout struct {
+	ID   string         `json:"id"`
+	Name string         `json:"name"`
+	Keys map[string]Key `json:"keys"` // slot ID → key
+}
+
+// legacyBinding is the v1–v3 format (slot and action in one), read for migration only.
+type legacyBinding struct {
+	Slot
+	Label  string `json:"label"`
+	Icon   string `json:"icon,omitempty"`
+	Action Action `json:"action"`
 }
 
 type Config struct {
@@ -50,31 +76,57 @@ type Config struct {
 	Listen              string      `json:"listen"`
 	Device              DeviceMatch `json:"device"`
 	Grab                bool        `json:"grab"`                 // take exclusive control of the device
-	UnmappedPassthrough bool        `json:"unmapped_passthrough"` // unassigned buttons keep their factory keys
+	UnmappedPassthrough bool        `json:"unmapped_passthrough"` // unlinked buttons keep their factory keys
 	Columns             int         `json:"columns"`
-	Bindings            []Binding   `json:"bindings"`
+	PeerPort            int         `json:"peer_port"` // TCP port for paired machines (all interfaces)
+	Slots               []Slot      `json:"slots"`
+	Layouts             []Layout    `json:"layouts"`
+	ActiveLayout        string      `json:"active_layout"`
+
+	Bindings []legacyBinding `json:"bindings,omitempty"` // pre-v4 only
+}
+
+const configVersion = 4
+
+func defaultSlots() []Slot {
+	slots := []Slot{{ID: "dial_ccw", Group: "dial"}, {ID: "dial_press", Group: "dial"}, {ID: "dial_cw", Group: "dial"}}
+	for i := 0; i < 18; i++ {
+		slots = append(slots, Slot{ID: fmt.Sprintf("k%d", i+1), Group: "keys"})
+	}
+	applyKD20Layout(slots)
+	return slots
+}
+
+func defaultLabel(slotID string) string {
+	switch slotID {
+	case "dial_ccw":
+		return "Dial ↺"
+	case "dial_press":
+		return "Dial press"
+	case "dial_cw":
+		return "Dial ↻"
+	}
+	return strings.ToUpper(slotID)
+}
+
+func newLayout(id, name string, slots []Slot) Layout {
+	l := Layout{ID: id, Name: name, Keys: map[string]Key{}}
+	for _, s := range slots {
+		l.Keys[s.ID] = Key{Label: defaultLabel(s.ID), Action: Action{Type: "none"}}
+	}
+	return l
 }
 
 func defaultConfig() *Config {
 	c := &Config{
-		Version: 3, Listen: "127.0.0.1:47830",
-		Device:              DeviceMatch{Vendor: "256c", Product: "8251"},
-		Grab:                true,
-		UnmappedPassthrough: false,
-		Columns:             4,
+		Version: configVersion, Listen: "127.0.0.1:47830",
+		Device:  DeviceMatch{Vendor: "256c", Product: "8251"},
+		Grab:    true,
+		Columns: 4,
+		Slots:   defaultSlots(),
 	}
-	none := Action{Type: "none"} // until mapped, a button is silent
-	c.Bindings = append(c.Bindings,
-		Binding{ID: "dial_ccw", Label: "Dial ↺", Group: "dial", Action: none},
-		Binding{ID: "dial_press", Label: "Dial press", Group: "dial", Action: none},
-		Binding{ID: "dial_cw", Label: "Dial ↻", Group: "dial", Action: none},
-	)
-	for i := 0; i < 18; i++ {
-		c.Bindings = append(c.Bindings, Binding{
-			ID: fmt.Sprintf("k%d", i+1), Label: fmt.Sprintf("K%d", i+1), Group: "keys", Action: none,
-		})
-	}
-	applyKD20Layout(c)
+	c.Layouts = []Layout{newLayout("default", "Default", c.Slots)}
+	c.ActiveLayout = "default"
 	return c
 }
 
@@ -89,29 +141,58 @@ var kd20Layout = map[string][4]int{ // id → x, y, w, h
 	"k17": {0, 4, 2, 1}, "k18": {3, 3, 1, 2},
 }
 
-func applyKD20Layout(c *Config) {
-	for i := range c.Bindings {
-		if p, ok := kd20Layout[c.Bindings[i].ID]; ok {
-			b := &c.Bindings[i]
-			b.X, b.Y, b.W, b.H = p[0], p[1], p[2], p[3]
+func applyKD20Layout(slots []Slot) {
+	for i := range slots {
+		if p, ok := kd20Layout[slots[i].ID]; ok {
+			s := &slots[i]
+			s.X, s.Y, s.W, s.H = p[0], p[1], p[2], p[3]
 		}
 	}
-	c.Columns = 4
 }
 
-func configPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		dir = filepath.Join(os.Getenv("HOME"), ".config")
+// migrate upgrades older config formats in place.
+func migrate(c *Config) {
+	if c.Version < 2 { // v1 drew a 4×4 grid plus two wide keys
+		for i := range c.Bindings {
+			if p, ok := kd20Layout[c.Bindings[i].ID]; ok {
+				b := &c.Bindings[i]
+				b.X, b.Y, b.W, b.H = p[0], p[1], p[2], p[3]
+			}
+		}
+		c.Columns = 4
 	}
-	return filepath.Join(dir, "keybar", "config.json")
+	if c.Version < 3 { // v2 let unassigned buttons type their factory keys
+		c.UnmappedPassthrough = false
+		for i := range c.Bindings {
+			if c.Bindings[i].Action.Type == "passthrough" {
+				c.Bindings[i].Action = Action{Type: "none"}
+			}
+		}
+	}
+	if c.Version < 4 && len(c.Bindings) > 0 { // v3 had one set of bindings; v4 splits slots from layouts
+		l := Layout{ID: "default", Name: "Default", Keys: map[string]Key{}}
+		c.Slots = nil
+		for _, b := range c.Bindings {
+			c.Slots = append(c.Slots, b.Slot)
+			l.Keys[b.ID] = Key{Label: b.Label, Icon: b.Icon, Action: b.Action}
+		}
+		c.Layouts = []Layout{l}
+		c.ActiveLayout = l.ID
+		c.Bindings = nil
+	}
+	if c.Version < configVersion {
+		c.Version = configVersion
+	}
 }
+
+func configPath() string { return filepath.Join(dataDir(), "config.json") }
 
 type ConfigStore struct {
 	mu        sync.RWMutex
+	wmu       sync.Mutex // serialises read-modify-write of the file
 	path      string
 	cfg       *Config
-	byTrigger map[string]*Binding
+	byTrigger map[string]*Slot
 }
 
 func LoadConfig(path string) *ConfigStore {
@@ -145,63 +226,90 @@ func LoadConfig(path string) *ConfigStore {
 }
 
 func normalize(c *Config) error {
+	migrate(c)
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:47830"
 	}
 	if c.Columns <= 0 {
 		c.Columns = 4
 	}
-	if c.Version < 2 { // v1 drew a 4×4 grid plus two wide keys
-		applyKD20Layout(c)
-		c.Version = 2
+	if c.PeerPort <= 0 {
+		c.PeerPort = 47831
 	}
-	if c.Version < 3 { // v2 let unassigned buttons type their factory keys
-		c.UnmappedPassthrough = false
-		for i := range c.Bindings {
-			if c.Bindings[i].Action.Type == "passthrough" {
-				c.Bindings[i].Action = Action{Type: "none"}
-			}
-		}
-		c.Version = 3
+	if len(c.Slots) == 0 {
+		c.Slots = defaultSlots()
 	}
 	seen := map[string]string{}
 	ids := map[string]bool{}
-	for i := range c.Bindings {
-		b := &c.Bindings[i]
-		b.Trigger = strings.TrimSpace(b.Trigger)
-		if b.ID == "" || ids[b.ID] {
-			return fmt.Errorf("binding %d has a missing or duplicate id", i)
+	for i := range c.Slots {
+		s := &c.Slots[i]
+		s.Trigger = strings.TrimSpace(s.Trigger)
+		if s.ID == "" || ids[s.ID] {
+			return fmt.Errorf("slot %d has a missing or duplicate id", i)
 		}
-		ids[b.ID] = true
-		if b.Action.Type == "" {
-			b.Action.Type = "none"
+		ids[s.ID] = true
+		if s.W <= 0 {
+			s.W = 1
 		}
-		if b.W <= 0 {
-			b.W = 1
+		if s.H <= 0 {
+			s.H = 1
 		}
-		if b.H <= 0 {
-			b.H = 1
-		}
-		if b.Trigger != "" {
-			if other, dup := seen[b.Trigger]; dup {
-				return fmt.Errorf("%q and %q use the same device button", other, b.Label)
+		if s.Trigger != "" {
+			if other, dup := seen[s.Trigger]; dup {
+				return fmt.Errorf("%s and %s use the same device button", other, s.ID)
 			}
-			seen[b.Trigger] = b.Label
+			seen[s.Trigger] = s.ID
 		}
-		if b.Action.Type == "keys" && strings.TrimSpace(b.Action.Keys) != "" {
-			if _, err := parseShortcut(b.Action.Keys); err != nil {
-				return fmt.Errorf("%s: %v", b.Label, err)
+	}
+	if len(c.Layouts) == 0 {
+		c.Layouts = []Layout{newLayout("default", "Default", c.Slots)}
+	}
+	layoutIDs := map[string]bool{}
+	for i := range c.Layouts {
+		l := &c.Layouts[i]
+		l.Name = strings.TrimSpace(l.Name)
+		if l.ID == "" || layoutIDs[l.ID] {
+			return fmt.Errorf("layout %q has a missing or duplicate id", l.Name)
+		}
+		layoutIDs[l.ID] = true
+		if l.Name == "" {
+			return fmt.Errorf("layout %s needs a name", l.ID)
+		}
+		if l.Keys == nil {
+			l.Keys = map[string]Key{}
+		}
+		for _, s := range c.Slots { // every slot has an entry, so the panel never sees gaps
+			if _, ok := l.Keys[s.ID]; !ok {
+				l.Keys[s.ID] = Key{Label: defaultLabel(s.ID), Action: Action{Type: "none"}}
 			}
 		}
+		for id, k := range l.Keys {
+			if !ids[id] {
+				delete(l.Keys, id)
+				continue
+			}
+			if k.Action.Type == "" {
+				k.Action.Type = "none"
+				l.Keys[id] = k
+			}
+			if k.Action.Type == "keys" && strings.TrimSpace(k.Action.Keys) != "" {
+				if _, err := parseShortcut(k.Action.Keys); err != nil {
+					return fmt.Errorf("%s / %s: %v", l.Name, k.Label, err)
+				}
+			}
+		}
+	}
+	if !layoutIDs[c.ActiveLayout] {
+		c.ActiveLayout = c.Layouts[0].ID
 	}
 	return nil
 }
 
 func (s *ConfigStore) install(c *Config) {
-	idx := map[string]*Binding{}
-	for i := range c.Bindings {
-		if t := c.Bindings[i].Trigger; t != "" {
-			idx[t] = &c.Bindings[i]
+	idx := map[string]*Slot{}
+	for i := range c.Slots {
+		if t := c.Slots[i].Trigger; t != "" {
+			idx[t] = &c.Slots[i]
 		}
 	}
 	s.mu.Lock()
@@ -231,13 +339,42 @@ func (s *ConfigStore) Get() *Config {
 	return s.cfg
 }
 
-func (s *ConfigStore) Find(trigger string) *Binding {
+// SlotByTrigger returns the slot linked to a device signal, or nil.
+func (s *ConfigStore) SlotByTrigger(trigger string) *Slot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.byTrigger[trigger]
 }
 
+// ActiveKey returns what a slot does in the active layout.
+func (s *ConfigStore) ActiveKey(slotID string) (Key, *Layout) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	l := s.cfg.layout(s.cfg.ActiveLayout)
+	if l == nil {
+		return Key{Action: Action{Type: "none"}}, nil
+	}
+	return l.Keys[slotID], l
+}
+
+func (c *Config) layout(id string) *Layout {
+	for i := range c.Layouts {
+		if c.Layouts[i].ID == id {
+			return &c.Layouts[i]
+		}
+	}
+	return nil
+}
+
+// Set saves a config from the panel. The active layout is runtime state that a
+// Keydial button may have changed since the panel loaded, so it is kept unless
+// the panel's copy no longer has that layout.
 func (s *ConfigStore) Set(c *Config) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if cur := s.Get(); cur != nil && c.layout(cur.ActiveLayout) != nil {
+		c.ActiveLayout = cur.ActiveLayout
+	}
 	if err := normalize(c); err != nil {
 		return err
 	}
@@ -246,6 +383,42 @@ func (s *ConfigStore) Set(c *Config) error {
 	}
 	s.install(c)
 	return nil
+}
+
+// SwitchLayout activates a layout by ID, or "next"/"prev" in list order, and
+// returns the layout now active.
+func (s *ConfigStore) SwitchLayout(to string) (Layout, error) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	cur := *s.cfg // shallow copy: only ActiveLayout changes
+	i := 0
+	for j, l := range cur.Layouts {
+		if l.ID == cur.ActiveLayout {
+			i = j
+		}
+	}
+	n := len(cur.Layouts)
+	switch to {
+	case "next", "":
+		i = (i + 1) % n
+	case "prev":
+		i = (i + n - 1) % n
+	default:
+		if cur.layout(to) == nil {
+			return Layout{}, fmt.Errorf("no layout %q", to)
+		}
+		for j, l := range cur.Layouts {
+			if l.ID == to {
+				i = j
+			}
+		}
+	}
+	cur.ActiveLayout = cur.Layouts[i].ID
+	if err := s.write(&cur); err != nil {
+		return Layout{}, err
+	}
+	s.install(&cur)
+	return cur.Layouts[i], nil
 }
 
 func (s *ConfigStore) Path() string { return s.path }

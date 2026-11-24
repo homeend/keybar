@@ -1,7 +1,8 @@
 # Keybar
 
 Maps the buttons and dial of a **Huion Keydial mini (KD20)** to shortcuts, apps,
-commands, mouse events and typed text on Linux (GNOME/Wayland). Single Go binary:
+commands, mouse events and typed text on Linux (GNOME/Wayland), and can drive
+other computers (Linux or Windows) over the network. Single Go binary:
 a tray icon, a daemon that reads the device, and a control panel at
 <http://127.0.0.1:47830>.
 
@@ -27,6 +28,51 @@ Open the panel from the app grid ("Keybar"), the tray icon, or `keybar open`.
 2. Pick what it does: Shortcut (record from your keyboard or use a preset), App,
    Command (voxtype voice presets included, optional release command for
    push-to-talk), Mouse, Text, Factory key, Nothing. Changes save instantly.
+
+## Layouts
+Each machine can have several layouts (tabs above the device). One is active; a key
+with the **Layout** action switches to the next/previous/a named one. Give every
+layout a way back.
+
+## Several computers
+One Keydial can control several computers on the same network. The computer it is
+plugged into (Linux, for now) reads it; Keybar on the other computers receives the
+presses and runs them with **their own** active layout.
+
+1. Run Keybar on both computers. They find each other by themselves
+   (🖧 **Machines** → *Nearby*).
+2. Click **Pair…**, check both screens show the same 6-digit code, and confirm on
+   both. Keybar then offers to copy layouts; shortcuts are converted for the other
+   OS where needed (Super ↔ Win gestures, workspaces ↔ virtual desktops, screenshot),
+   apps are matched by name, and what can't be converted is marked ⚠.
+3. Give a key the **Machine** action: hold it, turn the dial to pick a computer,
+   release to switch (a quick tap goes back to the previous one).
+
+Security: discovery beacons carry no secrets. Pairing uses the Noise protocol (XX)
+with a 6-digit comparison code; afterwards every connection uses Noise KK, so only
+paired machines can connect and all traffic is encrypted. Keys live in
+`identity.json` / `peers.json` (owner-only). Ports: UDP 47832 (discovery),
+TCP 47831 (paired machines).
+
+## Windows (receiver)
+Needs [Go](https://go.dev/dl/) and Git.
+```bat
+git clone <this repo> keybar && cd keybar
+build-windows.cmd        :: builds keybar.exe without a console window
+keybar.exe               :: tray icon + panel at http://127.0.0.1:47830
+keybar.exe install       :: start at sign-in (uninstall: keybar.exe uninstall)
+```
+- When Windows asks, **allow Keybar on private networks**. The network must be set to
+  *Private* (Settings → Network → your connection) — on *Public* networks Windows
+  blocks discovery and incoming connections. If the first prompt was dismissed:
+  `netsh advfirewall firewall add rule name=Keybar dir=in action=allow program="%CD%\keybar.exe" enable=yes profile=private` (admin).
+- Apps are the Start-menu shortcuts; commands run with `cmd /C`.
+- Windows doesn't let a normal program type into apps running as administrator.
+- Config: `%APPDATA%\keybar`; log: `%LOCALAPPDATA%\keybar\keybar.log`.
+
+## Testing without a second computer
+`make test-peer` starts a second Keybar on this computer that pretends to be a
+Windows machine (panel http://127.0.0.1:47840, actions only logged).
 
 ## Files
 - Config: `~/.config/keybar/config.json`; log: `~/.cache/keybar/keybar.log`

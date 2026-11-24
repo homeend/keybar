@@ -3,10 +3,7 @@ package main
 import (
 	"log"
 	"os"
-	"os/exec"
-	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -20,11 +17,12 @@ type activeTrigger struct {
 }
 
 type Engine struct {
-	store    *ConfigStore
-	em       *Emitter
-	bus      *Bus
-	in       chan InputEvent
-	grabbed  func() bool
+	store      *ConfigStore
+	em         *Emitter
+	bus        *Bus
+	in         chan InputEvent
+	grabbed    func() bool
+	router     *Router      // nil: everything runs here
 	learnUntil atomic.Int64 // unix nanos; the next press is captured instead of acted on
 
 	held      []uint16        // modifiers physically held, in press order
@@ -209,33 +207,79 @@ func (e *Engine) press(sig string, passDown, passUp func()) *activeTrigger {
 		e.bus.Publish(BusEvent{Type: "learned", Trigger: sig})
 		return &activeTrigger{}
 	}
-	cfg := e.store.Get()
-	b := e.store.Find(sig)
-	ev := BusEvent{Type: "trigger", Trigger: sig}
-	var act Action
-	if b != nil {
-		ev.Binding = b.ID
-		act = b.Action
-	} else if cfg.UnmappedPassthrough {
-		act = Action{Type: "passthrough"}
-	} else {
-		act = Action{Type: "none"}
+	slot := e.store.SlotByTrigger(sig)
+	if slot == nil {
+		e.bus.Publish(BusEvent{Type: "trigger", Trigger: sig})
+		log.Printf("trigger %s -> not linked", sig)
+		if e.store.Get().UnmappedPassthrough {
+			return e.passthrough(passDown, passUp)
+		}
+		return &activeTrigger{}
+	}
+	ev := BusEvent{Type: "trigger", Trigger: sig, Binding: slot.ID}
+	if e.router != nil {
+		if t := e.router.Target(); t != "" {
+			if k, _ := e.store.ActiveKey(slot.ID); k.Action.Type != "machine" {
+				ev.To = e.router.name(t)
+			}
+		}
 	}
 	e.bus.Publish(ev)
-	log.Printf("trigger %s -> binding=%q action=%+v grabbed=%v", sig, ev.Binding, act, e.grabbed())
+	if e.router != nil {
+		return e.router.route(slot.ID, passDown, passUp)
+	}
+	return e.runSlot(slot.ID, passDown, passUp)
+}
 
-	if act.Type == "passthrough" {
-		if !e.grabbed() {
-			return &activeTrigger{} // the original event already reached the desktop
+// runSlot runs what a slot does in the active layout of this machine.
+func (e *Engine) runSlot(slotID string, passDown, passUp func()) *activeTrigger {
+	key, layout := e.store.ActiveKey(slotID)
+	act := key.Action
+	name := ""
+	if layout != nil {
+		name = layout.Name
+	}
+	log.Printf("slot %s [%s] -> %+v", slotID, name, act)
+	switch act.Type {
+	case "passthrough":
+		return e.passthrough(passDown, passUp)
+	case "layout":
+		l, err := e.store.SwitchLayout(act.Layout)
+		if err != nil {
+			log.Printf("switch layout: %v", err)
+			return &activeTrigger{}
 		}
-		passDown()
-		return &activeTrigger{release: passUp}
+		e.bus.Publish(BusEvent{Type: "layout", Layout: l.ID})
+		notify("Keydial layout: " + l.Name)
+		return &activeTrigger{}
 	}
 	return &activeTrigger{release: runAction(e.em, act)}
 }
 
+func (e *Engine) passthrough(passDown, passUp func()) *activeTrigger {
+	if !e.grabbed() {
+		return &activeTrigger{} // the original event already reached the desktop
+	}
+	passDown()
+	return &activeTrigger{release: passUp}
+}
+
+// dryRun (KEYBAR_DRY_RUN=1) logs actions instead of running them: for a test
+// copy of Keybar on the same computer.
+var dryRun = os.Getenv("KEYBAR_DRY_RUN") != ""
+
+// quietDesktop turns off desktop notifications (tests).
+var quietDesktop = false
+
+// notify shows a short desktop notification that replaces the previous one.
+func notify(msg string) { showOSD(msg, "") }
+
 // runAction starts an action and returns what to do on release (may be nil).
 func runAction(em *Emitter, a Action) func() {
+	if dryRun {
+		log.Printf("dry run: %+v", a)
+		return nil
+	}
 	switch a.Type {
 	case "keys":
 		seq, err := parseShortcut(a.Keys)
@@ -265,7 +309,7 @@ func runAction(em *Emitter, a Action) func() {
 		}
 	case "app":
 		if a.App != "" {
-			spawn("gtk-launch " + shellQuote(strings.TrimSuffix(a.App, ".desktop")))
+			launchApp(a.App)
 		}
 	case "command":
 		spawn(a.Command)
@@ -325,20 +369,3 @@ func typeText(em *Emitter, s string) {
 		time.Sleep(4 * time.Millisecond)
 	}
 }
-
-func spawn(cmd string) {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return
-	}
-	c := exec.Command("sh", "-c", cmd)
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	c.Dir = os.Getenv("HOME")
-	if err := c.Start(); err != nil {
-		log.Printf("run %q: %v", cmd, err)
-		return
-	}
-	go c.Wait()
-}
-
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

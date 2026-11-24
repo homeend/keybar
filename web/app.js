@@ -1,8 +1,13 @@
 "use strict";
 const TOKEN = window.KEYBAR_TOKEN;
+// Receiver-only machines (Windows for now) never see the Keydial themselves: presses
+// arrive from the paired machine it's plugged into, so every key counts as linked.
+const RECEIVER = window.KEYBAR_HOST === false;
+const linked = b => RECEIVER || !!b.trigger;
+const WIN = window.KEYBAR_OS === "windows";
 const $ = (s, r = document) => r.querySelector(s);
 
-let cfg = null, status = null, selected = null, apps = null;
+let cfg = null, status = null, selected = null, apps = null, netState = null;
 let learn = null; // { id, queue: [ids] } — explicit "Learn" dialog
 let autoLearn = null; // id of an unlinked slot that links to the next button press
 
@@ -33,11 +38,30 @@ function toast(msg, ms = 3200) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
-const byId = id => cfg.bindings.find(b => b.id === id);
+// The device has fixed slots (cfg.slots: position + linked button); each layout
+// says what every slot does. A "view" merges the two for the layout being edited.
+let editLayout = null; // id of the layout shown in the panel (defaults to the active one)
+const curLayout = () => cfg.layouts.find(l => l.id === editLayout) || cfg.layouts.find(l => l.id === cfg.active_layout) || cfg.layouts[0];
+const layoutName = id => (cfg.layouts.find(l => l.id === id) || {}).name || id;
+function view(slot) {
+  const key = () => { const k = curLayout().keys; return k[slot.id] || (k[slot.id] = { label: slot.id.toUpperCase(), action: { type: "none" } }); };
+  return {
+    get id() { return slot.id; }, get group() { return slot.group; },
+    get x() { return slot.x; }, get y() { return slot.y; }, get w() { return slot.w; }, get h() { return slot.h; },
+    get trigger() { return slot.trigger; }, set trigger(v) { slot.trigger = v; },
+    get label() { return key().label; }, set label(v) { key().label = v; },
+    get icon() { return key().icon; }, set icon(v) { key().icon = v; },
+    get action() { return key().action; }, set action(v) { key().action = v; },
+    get note() { return key().note || ""; }, set note(v) { key().note = v || undefined; },
+    get info() { return key().info || ""; }, set info(v) { key().info = v || undefined; },
+  };
+}
+const bindings = () => cfg.slots.map(view);
+const byId = id => { const s = cfg.slots.find(s => s.id === id); return s && view(s); };
 
 // ---------- pretty names ----------
 const MODS = { KEY_LEFTCTRL: "Ctrl", KEY_RIGHTCTRL: "RCtrl", KEY_LEFTSHIFT: "Shift", KEY_RIGHTSHIFT: "RShift",
-  KEY_LEFTALT: "Alt", KEY_RIGHTALT: "AltGr", KEY_LEFTMETA: "Super", KEY_RIGHTMETA: "RSuper" };
+  KEY_LEFTALT: "Alt", KEY_RIGHTALT: "AltGr", KEY_LEFTMETA: WIN ? "Win" : "Super", KEY_RIGHTMETA: WIN ? "RWin" : "RSuper" };
 const NICE = { ESC: "Esc", ENTER: "Enter", SPACE: "Space", TAB: "Tab", BACKSPACE: "Backspace", DELETE: "Del",
   SYSRQ: "PrtSc", PRINT: "PrtSc", VOLUMEUP: "Vol +", VOLUMEDOWN: "Vol −", MUTE: "Mute", MICMUTE: "Mic mute",
   PLAYPAUSE: "Play/Pause", NEXTSONG: "Next", PREVIOUSSONG: "Prev", PAGEUP: "PgUp", PAGEDOWN: "PgDn",
@@ -82,8 +106,10 @@ function summary(b) {
     case "command": return "▸ " + (a.command || "(empty)");
     case "mouse": return "🖱 " + (MOUSE[a.mouse] || "Mouse");
     case "text": return "“" + (a.text || "") + "”";
-    case "passthrough": return b.trigger ? "Factory key" : "Not linked";
-    default: return b.trigger ? "Does nothing" : "Not linked";
+    case "layout": return "⇄ " + (a.layout === "prev" ? "Prev layout" : a.layout && a.layout !== "next" ? layoutName(a.layout) : "Next layout");
+    case "machine": return "🖧 " + ({ pick: "Pick machine", next: "Next machine", self: "This machine" }[a.machine || "pick"] || machineName(a.machine));
+    case "passthrough": return linked(b) ? "Factory key" : "Not linked";
+    default: return linked(b) ? "Does nothing" : "Not linked";
   }
 }
 function appIcon(a) {
@@ -100,7 +126,7 @@ function renderDevice() {
   const keys = $("#keys");
   keys.style.gridTemplateColumns = `repeat(${cfg.columns || 4}, 1fr)`;
   keys.replaceChildren();
-  for (const b of cfg.bindings.filter(b => b.group === "keys")) {
+  for (const b of bindings().filter(b => b.group === "keys")) {
     const act = el("div", { class: "act" });
     if (b.action.type === "app") {
       const src = appIcon(b.action);
@@ -110,12 +136,13 @@ function renderDevice() {
     const w = b.w || 1, h = b.h || 1;
     const glyph = GLYPHS[`${b.x},${b.y}`];
     const k = el("button", {
-      class: "key" + (w > 1 || h > 1 ? " span" : "") + (h > 1 ? " tall" : "") + (w > 1 ? " wide" : "") + (b.trigger ? "" : " unlearned") + (selected === b.id ? " selected" : ""),
-      "data-id": b.id, title: b.trigger ? "Device sends: " + prettyTrigger(b.trigger) : "Not linked yet — click to link",
+      class: "key" + (w > 1 || h > 1 ? " span" : "") + (h > 1 ? " tall" : "") + (w > 1 ? " wide" : "") + (linked(b) ? "" : " unlearned") + (selected === b.id ? " selected" : ""),
+      "data-id": b.id, title: RECEIVER ? b.label : b.trigger ? "Device sends: " + prettyTrigger(b.trigger) : "Not linked yet — click to link",
       onclick: () => select(b.id),
     }, el("div", { class: "lbl" }, b.label), act,
       b.icon ? el("span", { class: "emoji" }, b.icon) : b.trigger ? el("span", { class: "phys", title: "Linked button sends " + prettyTrigger(b.trigger) }, prettyTrigger(b.trigger)) : null,
-      glyph ? el("span", { class: "glyph" }, glyph) : null);
+      glyph ? el("span", { class: "glyph" }, glyph) : null,
+      b.note ? el("span", { class: "warn", title: b.note }, "⚠") : b.info ? el("span", { class: "warn info", title: b.info }, "ℹ") : null);
     k.style.gridColumn = `${b.x + 1} / span ${b.w || 1}`;
     k.style.gridRow = `${b.y + 1} / span ${b.h || 1}`;
     keys.append(k);
@@ -125,7 +152,7 @@ function renderDevice() {
     if (!b) continue;
     part.classList.toggle("selected", selected === b.id);
     part.title = b.label + " — " + summary(b);
-    part.querySelector("small").textContent = (b.action.type === "passthrough" || b.action.type === "none") && !b.trigger ? "" : summary(b);
+    part.querySelector("small").textContent = (b.action.type === "passthrough" || b.action.type === "none") && !linked(b) ? "" : summary(b);
     part.onclick = () => select(b.id);
   }
 }
@@ -135,6 +162,58 @@ function flash(id) {
   if (!n) return;
   n.classList.remove("flash"); void n.offsetWidth; n.classList.add("flash");
   setTimeout(() => n.classList.remove("flash"), 450);
+}
+
+// ---------- layouts ----------
+function renderAll() { renderLayouts(); renderDevice(); renderEditor(); }
+function renderLayouts() {
+  const L = curLayout();
+  $("#layouts").replaceChildren(
+    ...cfg.layouts.map(l => el("button", {
+        class: "lt" + (l.id === L.id ? " on" : ""), title: l.id === cfg.active_layout ? "Active layout" : "Edit this layout (not active)",
+        onclick: () => { editLayout = l.id; renderAll(); } },
+      l.id === cfg.active_layout ? el("span", { class: "live", title: "Active" }, "●") : null, l.name)),
+    el("button", { class: "lt add", title: "New layout", onclick: () => addLayout(false) }, "+"));
+  $("#layoutTools").replaceChildren(
+    L.id === cfg.active_layout
+      ? el("span", { class: "muted small" }, el("span", { class: "live" }, "●"), " Active on this machine")
+      : el("button", { class: "btn small primary", onclick: () => activateLayout(L.id) }, "Make active"),
+    el("div", { style: "flex:1" }),
+    el("button", { class: "btn small ghost", title: "Copy layouts from a paired machine", onclick: () => openCopy() }, "Copy from…"),
+    el("button", { class: "btn small ghost", onclick: renameLayout }, "Rename"),
+    el("button", { class: "btn small ghost", onclick: () => addLayout(true) }, "Duplicate"),
+    ...(cfg.layouts.length > 1 ? [el("button", { class: "btn small ghost", onclick: deleteLayout }, "Delete")] : []));
+}
+function addLayout(copy) {
+  const L = curLayout();
+  const name = prompt(copy ? "Name of the copy" : "Name of the new layout", copy ? L.name + " copy" : "");
+  if (!name || !name.trim()) return;
+  const keys = {};
+  for (const s of cfg.slots) keys[s.id] = copy ? structuredClone(L.keys[s.id]) : { label: (L.keys[s.id] || {}).label || s.id.toUpperCase(), action: { type: "none" } };
+  const l = { id: "l" + Date.now().toString(36), name: name.trim(), keys };
+  cfg.layouts.push(l);
+  editLayout = l.id; selected = null;
+  save(true); renderAll();
+}
+function renameLayout() {
+  const L = curLayout();
+  const name = prompt("Rename layout", L.name);
+  if (!name || !name.trim()) return;
+  L.name = name.trim(); save(true); renderAll();
+}
+function deleteLayout() {
+  const L = curLayout();
+  if (!confirm(`Delete layout “${L.name}”? This cannot be undone.`)) return;
+  cfg.layouts = cfg.layouts.filter(l => l !== L);
+  if (cfg.active_layout === L.id) cfg.active_layout = cfg.layouts[0].id;
+  editLayout = cfg.active_layout; selected = null;
+  save(true); renderAll();
+}
+async function activateLayout(id) {
+  await save(true);
+  try { const c = await api("POST", "/api/layout", { layout: id }); cfg.active_layout = c.active_layout; }
+  catch (e) { toast(e.message); }
+  renderAll();
 }
 
 // ---------- saving ----------
@@ -158,19 +237,26 @@ function save(now = false) {
 }
 
 // ---------- editor ----------
-const TYPES = [["keys", "Shortcut"], ["app", "App"], ["command", "Command"], ["mouse", "Mouse"], ["text", "Text"], ["passthrough", "Factory key"], ["none", "Nothing"]];
+const TYPES = [["keys", "Shortcut"], ["app", "App"], ["command", "Command"], ["mouse", "Mouse"], ["text", "Text"], ["layout", "Layout"], ["machine", "Machine"], ["passthrough", "Factory key"], ["none", "Nothing"]];
 
-const KEY_PRESETS = [
+const COMMON_PRESETS = [
   ["Escape", "esc"], ["Enter", "enter"], ["Copy", "ctrl+c"], ["Paste", "ctrl+v"], ["Cut", "ctrl+x"],
-  ["Undo", "ctrl+z"], ["Redo", "ctrl+shift+z"], ["Save", "ctrl+s"], ["Close tab", "ctrl+w"], ["New tab", "ctrl+t"],
-  ["Reopen tab", "ctrl+shift+t"], ["Switch window", "alt+tab"], ["Activities overview", "super"], ["Lock screen", "super+l"],
-  ["Screenshot", "print"], ["Workspace ←", "super+pageup"], ["Workspace →", "super+pagedown"],
-  ["Volume +", "volumeup"], ["Volume −", "volumedown"], ["Mute", "mute"], ["Mic mute", "micmute"],
-  ["Play/Pause", "playpause"], ["Next track", "nextsong"], ["Prev track", "previoussong"],
-  ["Voice start", "super+alt+r"], ["Voice stop & type", "super+alt+d"],
-  ["Voice cancel", "super+alt+x"],
-];
-const CMD_PRESETS = [
+  ["Undo", "ctrl+z"], ["Redo", WIN ? "ctrl+y" : "ctrl+shift+z"], ["Save", "ctrl+s"], ["Close tab", "ctrl+w"], ["New tab", "ctrl+t"],
+  ["Reopen tab", "ctrl+shift+t"], ["Switch window", "alt+tab"]];
+const OS_PRESETS = WIN ? [
+  ["Task view", "super+tab"], ["Lock screen", "super+l"], ["Screenshot", "super+shift+s"], ["Show desktop", "super+d"],
+  ["Desktop ←", "ctrl+super+left"], ["Desktop →", "ctrl+super+right"], ["File Explorer", "super+e"]]
+: [["Activities overview", "super"], ["Lock screen", "super+l"], ["Screenshot", "print"],
+  ["Workspace ←", "super+pageup"], ["Workspace →", "super+pagedown"]];
+const MEDIA_PRESETS = [["Volume +", "volumeup"], ["Volume −", "volumedown"], ["Mute", "mute"], ...(WIN ? [] : [["Mic mute", "micmute"]]),
+  ["Play/Pause", "playpause"], ["Next track", "nextsong"], ["Prev track", "previoussong"]];
+const VOICE_PRESETS = WIN ? [] : [["Voice start", "super+alt+r"], ["Voice stop & type", "super+alt+d"], ["Voice cancel", "super+alt+x"]];
+const KEY_PRESETS = [...COMMON_PRESETS, ...OS_PRESETS, ...MEDIA_PRESETS, ...VOICE_PRESETS];
+const CMD_PRESETS = WIN ? [
+  ["Calculator", { command: "start calc", release_command: "" }],
+  ["Notepad", { command: "start notepad", release_command: "" }],
+  ["Lock (rundll32)", { command: "rundll32.exe user32.dll,LockWorkStation", release_command: "" }],
+] : [
   ["🎙 Voice: start", { command: "voxtype record start", release_command: "" }],
   ["🎙 Voice: stop & type", { command: "voxtype record stop", release_command: "" }],
   ["🎙 Voice: toggle recording", { command: "voxtype record toggle", release_command: "" }],
@@ -194,7 +280,12 @@ function renderEditor() {
   ed.hidden = !b;
   if (!b) return;
   const a = b.action;
-  const change = (fn, rerender = false) => { fn(); save(); renderDevice(); if (rerender) renderEditor(); };
+  const change = (fn, rerender = false) => {
+    const before = JSON.stringify(b.action);
+    fn();
+    if (JSON.stringify(b.action) !== before && (b.note || b.info)) { b.note = b.info = ""; rerender = true; } // edited: the copy notes no longer apply
+    save(); renderDevice(); if (rerender) renderEditor();
+  };
 
   const head = el("div", { class: "ed-head" },
     el("input", { class: "emoji", value: b.icon || "", placeholder: "☆", maxlength: 4, title: "Emoji shown on the key",
@@ -202,7 +293,9 @@ function renderEditor() {
     el("input", { class: "name", value: b.label, oninput: e => change(() => (b.label = e.target.value)) }),
     el("button", { class: "btn ghost small", title: "Close", onclick: () => select(null) }, "✕"));
 
-  const trig = b.trigger
+  const trig = RECEIVER
+    ? el("div", { class: "note" }, "The Keydial is plugged into another computer. When it controls this one, this key runs the action below.")
+    : b.trigger
     ? el("div", { class: "section" },
         el("div", { class: "label" }, "Linked Keydial button"),
         el("div", { class: "row" },
@@ -217,12 +310,16 @@ function renderEditor() {
           el("b", {}, "Press the button on your Keydial"),
           el("div", { class: "muted small" }, `…that should be “${b.label}”. It links automatically. You can set the action below already; it starts working once the button is linked.`)));
 
+  const warn = b.note ? el("div", { class: "warnbox" }, "⚠ ", b.note, " ",
+    el("button", { class: "btn small ghost", onclick: () => change(() => (b.note = ""), true) }, "Dismiss"))
+    : b.info ? el("div", { class: "warnbox info" }, "ℹ ", b.info, " ",
+      el("button", { class: "btn small ghost", onclick: () => change(() => (b.info = ""), true) }, "OK")) : null;
   const tabs = el("div", { class: "tabs" }, TYPES.map(([t, name]) =>
     el("button", { class: a.type === t ? "on" : "", onclick: () => change(() => { b.action = { type: t }; }, true) }, name)));
 
   const body = el("div", { class: "section" }, actionBody(b, change));
 
-  ed.replaceChildren(head, trig,
+  ed.replaceChildren(...[head, trig, warn].filter(Boolean),
     el("div", { class: "section" }, el("div", { class: "label" }, "When pressed"), tabs), body,
     el("div", { class: "foot" },
       el("button", { class: "btn", onclick: testAction, title: "Runs the action in 0.6 s" }, "▶ Test"),
@@ -236,7 +333,7 @@ function renderEditor() {
 // While an unlinked slot is open, the next Keydial press links to it.
 function syncAutoLearn() {
   const b = byId(selected);
-  const want = b && !b.trigger && !learn ? b.id : null;
+  const want = b && !linked(b) && !learn ? b.id : null;
   if (want === autoLearn) return;
   autoLearn = want;
   api("POST", "/api/learn", { start: !!want }).catch(() => {});
@@ -289,7 +386,7 @@ function actionBody(b, change) {
           Object.assign(b.action, v);
           if (!b.label || /^K\d+$/.test(b.label)) b.label = n.replace(/^\S+ /, "");
         }, true) }, n))),
-        el("div", { class: "note" }, "Runs with sh -c in your session, so ~ and $HOME work."),
+        el("div", { class: "note" }, WIN ? "Runs with cmd /C in your session, without a console window; %USERPROFILE% etc. work." : "Runs with sh -c in your session, so ~ and $HOME work."),
       ];
     case "mouse": {
       const sel = el("select", { onchange: e => change(() => (b.action.mouse = e.target.value), true) },
@@ -306,6 +403,21 @@ function actionBody(b, change) {
     case "text":
       return [el("textarea", { placeholder: "Text to type…", oninput: e => change(() => (b.action.text = e.target.value)) }, a.text || ""),
         el("div", { class: "note" }, "Typed as if on a US keyboard (plain ASCII).")];
+    case "layout": {
+      if (!a.layout) { b.action.layout = "next"; save(); }
+      const opts = [["next", "Next layout"], ["prev", "Previous layout"], ...cfg.layouts.map(l => [l.id, `Switch to “${l.name}”`])];
+      return [el("select", { onchange: e => change(() => (b.action.layout = e.target.value), true) },
+          opts.map(([v, n]) => el("option", { value: v, selected: (a.layout || "next") === v }, n))),
+        el("div", { class: "note" }, "Changes which layout is active on this machine. Give every layout a button that switches on, so you can always get back.")];
+    }
+    case "machine": {
+      if (!a.machine) { b.action.machine = "pick"; save(); }
+      const opts = [["pick", "Hold, turn the dial to pick, release to switch (tap = previous)"], ["next", "Next machine"], ["self", "This machine"],
+        ...((netState && netState.paired) || []).map(p => [p.id, `Switch to “${p.name}”`])];
+      return [el("select", { onchange: e => change(() => (b.action.machine = e.target.value), true) },
+          opts.map(([v, n]) => el("option", { value: v, selected: (a.machine || "pick") === v }, n))),
+        el("div", { class: "note" }, "Chooses which computer the Keydial controls. This button always works on this machine (where the Keydial is plugged in), whatever layout the other computer uses.")];
+    }
     case "passthrough":
       return el("div", { class: "note" }, "The button keeps its factory shortcut" + (b.trigger ? ": " + prettyTrigger(b.trigger) : "") + ".");
     default:
@@ -421,7 +533,7 @@ function onLearned(sig) {
   const auto = !learn;
   autoLearn = null;
   const b = byId(id);
-  for (const o of cfg.bindings) if (o !== b && o.trigger === sig) {
+  for (const o of bindings()) if (o.id !== b.id && o.trigger === sig) {
     o.trigger = ""; toast(`Moved from “${o.label}” to “${b.label}”`);
   }
   b.trigger = sig;
@@ -439,15 +551,17 @@ addEventListener("pagehide", () => {
 $("#learnCancel").onclick = endLearn;
 $("#learnSkip").onclick = () => nextLearn();
 $("#learnDlg").addEventListener("cancel", e => { e.preventDefault(); }); // Esc may be a device key
-$("#learnAll").onclick = () => startLearn(cfg.bindings.map(b => b.id));
+$("#learnAll").onclick = () => startLearn(cfg.slots.map(s => s.id));
+if (RECEIVER) $("#learnAll").hidden = true;
 
 // ---------- live events ----------
 function addLog(ev) {
   const b = ev.binding && byId(ev.binding);
   const li = el("li", {},
     el("time", {}, new Date().toLocaleTimeString()),
-    el("span", { class: "chip" }, prettyTrigger(ev.trigger)),
-    b ? el("span", {}, "→ ", el("b", {}, b.label), el("span", { class: "muted" }, " · " + summary(b))) : el("span", { class: "muted" }, "not assigned"));
+    el("span", { class: "chip" }, ev.trigger ? prettyTrigger(ev.trigger) : "🖧"),
+    ev.to ? el("span", {}, "→ sent to ", el("b", {}, ev.to), el("span", { class: "muted" }, " (runs with its layout)"))
+    : b ? el("span", {}, "→ ", el("b", {}, b.label), el("span", { class: "muted" }, " · " + summary(b) + (ev.from ? " · from " + ev.from : ""))) : el("span", { class: "muted" }, "not assigned"));
   const log = $("#log");
   log.prepend(li);
   while (log.children.length > 60) log.lastChild.remove();
@@ -457,14 +571,23 @@ function connectEvents() {
   es.onmessage = m => {
     const ev = JSON.parse(m.data);
     if (ev.type === "learned") onLearned(ev.trigger);
+    else if (ev.type === "layout") {
+      const was = cfg.active_layout;
+      cfg.active_layout = ev.layout;
+      if (!editLayout || editLayout === was) editLayout = ev.layout; // follow the switch unless editing another one
+      renderAll();
+      toast("Layout: " + layoutName(ev.layout), 1500);
+    }
     else if (ev.type === "trigger") {
       addLog(ev);
-      if (ev.binding) flash(ev.binding);
+      if (ev.binding && !ev.to) flash(ev.binding);
       // The daemon wasn't in learn mode (e.g. it just restarted), but the panel
       // is waiting for a button: link this one anyway.
       else if (learn && learn.id || autoLearn) onLearned(ev.trigger);
       else if (!learn && !autoLearn) toast(`The “${prettyTrigger(ev.trigger)}” button isn't linked to a slot yet — click an empty slot on the left, then press it again`, 4000);
-    } else if (ev.type === "status" || ev.type === "hello") {
+    } else if (ev.type === "net") refreshNet();
+    else if (ev.type === "status" || ev.type === "hello") {
+      if (ev.type === "hello") refreshNet();
       refreshStatus();
       // A reconnect means the daemon may have restarted and forgotten learn mode.
       if (ev.type === "hello" && (learn || autoLearn)) api("POST", "/api/learn", { start: true }).catch(() => {});
@@ -473,11 +596,125 @@ function connectEvents() {
   es.onerror = () => { $("#status").textContent = "Keybar not running"; $("#status").className = "pill bad"; };
 }
 
+// ---------- machines ----------
+const OSNAME = { linux: "Linux", windows: "Windows", darwin: "macOS" };
+function machineName(id) {
+  if (!id) return netState ? netState.me.name : "this machine";
+  const p = netState && netState.paired.find(p => p.id === id);
+  return p ? p.name : "unknown machine";
+}
+async function refreshNet() {
+  try { netState = await api("GET", "/api/net"); } catch { return; }
+  const t = netState.target;
+  const pill = $("#targetPill");
+  pill.textContent = "Keydial → " + (t ? machineName(t) : "this machine");
+  pill.classList.toggle("remote", !!t);
+  if ($("#machinesDlg").open) renderMachines();
+  renderPairing();
+  if ($("#copyDlg").open && !copyList) loadCopyList(); // e.g. the session came up after pairing
+}
+function mrow(m, ...buttons) {
+  return el("div", { class: "mrow" }, el("span", { class: "dot" + (m.online ? " on" : ""), title: m.online ? "Connected" : "Offline" }),
+    el("div", { style: "flex:1;min-width:0" }, el("div", { class: "nm" }, m.name),
+      el("div", { class: "sub" }, [OSNAME[m.os] || m.os, m.addr].filter(Boolean).join(" · "))), ...buttons);
+}
+function renderMachines() {
+  const st = netState;
+  if (document.activeElement !== $("#myName")) $("#myName").value = st.me.name;
+  const netCall = (path, body) => api("POST", path, body).then(s => { netState = s; refreshNet(); }).catch(e => toast(e.message));
+  const me = mrow({ ...st.me, addr: "" }, st.target === "" ? el("span", { class: "tag" }, "Keydial here")
+    : el("button", { class: "btn small", onclick: () => netCall("/api/net/target", { id: "" }) }, "Control this"));
+  $("#pairedList").replaceChildren(me, ...st.paired.map(p => mrow(p,
+    st.target === p.id ? el("span", { class: "tag" }, "Keydial here")
+      : p.online ? el("button", { class: "btn small", onclick: () => netCall("/api/net/target", { id: p.id }) }, "Control") : null,
+    el("button", { class: "btn small ghost", onclick: () => { if (confirm(`Unpair “${p.name}”? You'll need to pair again to use it.`)) netCall("/api/net/unpair", { id: p.id }); } }, "Unpair"))));
+  $("#nearbyList").replaceChildren(...(st.nearby.length ? st.nearby.map(m => mrow(m,
+    el("button", { class: "btn small primary", onclick: () => netCall("/api/net/pair", { id: m.id }) }, "Pair…")))
+    : [el("div", { class: "empty" }, "Looking for other computers running Keybar…")]));
+}
+let pairShown = null;
+function renderPairing() {
+  const p = netState && netState.pairing, dlg = $("#pairDlg");
+  if (!p) {
+    if (dlg.open) dlg.close();
+    if (pairShown) {
+      const p = netState.paired.find(x => x.id === pairShown);
+      if (p) openCopy(p.id, `Paired with ${p.name} ✓. Do you want to copy its layouts to this machine? Shortcuts are converted for this system where needed; anything that can't be converted is marked ⚠. You can also do this later with “Copy from…”.`);
+      else toast("Pairing cancelled");
+      pairShown = null;
+    }
+    return;
+  }
+  pairShown = p.peer;
+  $("#pairTitle").textContent = (p.outgoing ? "Pairing with " : "Pairing request from ") + p.name;
+  $("#pairCode").textContent = p.code;
+  const them = p.theirs === "yes" ? `${p.name} confirmed.` : p.theirs === "no" ? `${p.name} cancelled.` : `Waiting for ${p.name}…`;
+  $("#pairState").textContent = (p.mine === "yes" ? "You confirmed. " : "") + them;
+  $("#pairYes").disabled = !!p.mine;
+  if (!dlg.open) dlg.showModal();
+}
+const answer = ok => api("POST", "/api/net/answer", { id: netState.pairing.peer, ok }).catch(e => toast(e.message));
+$("#pairYes").onclick = () => answer(true);
+$("#pairNo").onclick = () => answer(false);
+$("#pairDlg").addEventListener("cancel", e => { e.preventDefault(); answer(false); });
+$("#machinesBtn").onclick = $("#targetPill").onclick = () => { renderMachines(); $("#machinesDlg").showModal(); };
+$("#mClose").onclick = () => $("#machinesDlg").close();
+$("#myNameSave").onclick = () => api("POST", "/api/net/name", { name: $("#myName").value }).then(() => { toast("Renamed"); refreshNet(); }).catch(e => toast(e.message));
+
+// ---------- copying layouts from another machine ----------
+let copyFrom = null, copyList = null;
+function openCopy(peerId, intro) {
+  const online = ((netState && netState.paired) || []).filter(p => p.online);
+  copyFrom = peerId || copyFrom || (online[0] && online[0].id) || null;
+  copyList = null;
+  $("#copyIntro").textContent = intro || "Copied layouts are added next to yours; nothing you have is changed. Shortcuts are converted for this system where needed, and anything that can't be converted is marked ⚠.";
+  if (!$("#copyDlg").open) $("#copyDlg").showModal();
+  loadCopyList();
+}
+async function loadCopyList() {
+  const paired = (netState && netState.paired) || [];
+  $("#copyMachine").replaceChildren(...(paired.length ? paired.map(p => el("option", { value: p.id, selected: p.id === copyFrom }, p.name + (p.online ? "" : " (offline)")))
+    : [el("option", { value: "" }, "No paired machines")]));
+  const list = $("#copyLayouts");
+  $("#copyGo").disabled = true;
+  const p = paired.find(p => p.id === copyFrom);
+  if (!p) { list.replaceChildren(el("div", { class: "empty" }, "Pair a machine first (🖧 Machines).")); return; }
+  if (!p.online) { list.replaceChildren(el("div", { class: "empty" }, `Waiting for ${p.name} to connect…`)); return; }
+  list.replaceChildren(el("div", { class: "empty" }, "Loading…"));
+  try {
+    const r = await api("GET", "/api/net/layouts?id=" + encodeURIComponent(p.id));
+    copyList = r;
+    list.replaceChildren(...r.layouts.map(l => el("label", { class: "check" },
+      el("input", { type: "checkbox", value: l.id, checked: true, onchange: syncCopyBtn }),
+      el("span", {}, el("b", {}, l.name), el("span", { class: "muted small" }, ` · ${l.assigned} key${l.assigned === 1 ? "" : "s"} assigned · ${OSNAME[r.os] || r.os}`)))));
+    syncCopyBtn();
+  } catch (e) { list.replaceChildren(el("div", { class: "empty" }, e.message)); }
+}
+function syncCopyBtn() { $("#copyGo").disabled = !document.querySelector("#copyLayouts input:checked"); }
+$("#copyMachine").onchange = e => { copyFrom = e.target.value; loadCopyList(); };
+$("#copyClose").onclick = () => $("#copyDlg").close();
+$("#copyGo").onclick = async () => {
+  const ids = [...document.querySelectorAll("#copyLayouts input:checked")].map(i => i.value);
+  $("#copyGo").disabled = true;
+  try {
+    await save(true);
+    const r = await api("POST", "/api/net/import", { id: copyFrom, layouts: ids });
+    cfg = r.config; editLayout = r.first; selected = null;
+    renderAll();
+    $("#copyDlg").close();
+    const rp = r.report;
+    const n = (x, w) => `${x} ${w}${x === 1 ? "" : "s"}`;
+    toast(`Copied ${n(rp.layouts, "layout")}: ${n(rp.copied, "key")} as-is, ${rp.converted} converted` +
+      (rp.attention ? `, ${rp.attention} need attention (⚠)` : "") + ". Use “Make active” when ready.", 7000);
+  } catch (e) { toast(e.message); syncCopyBtn(); }
+};
+
 // ---------- status & settings ----------
 async function refreshStatus() {
   try { status = await api("GET", "/api/status"); } catch { return; }
   const p = $("#status");
-  if (status.paused) { p.textContent = "Paused"; p.className = "pill"; }
+  if (RECEIVER) { p.textContent = "Receives from paired machines"; p.className = "pill ok"; }
+  else if (status.paused) { p.textContent = "Paused"; p.className = "pill"; }
   else if (status.devices.length) {
     p.textContent = "Keydial connected" + (status.battery >= 0 ? ` · 🔋 ${status.battery}%` : "");
     p.className = "pill ok";
@@ -531,11 +768,14 @@ takeOver();
 // ---------- boot ----------
 (async () => {
   cfg = await api("GET", "/api/config");
+  editLayout = cfg.active_layout;
+  renderLayouts();
   renderDevice();
   if (location.hash && byId(location.hash.slice(1))) select(location.hash.slice(1));
   addEventListener("hashchange", () => { const id = location.hash.slice(1); if (byId(id)) select(id); });
   connectEvents();
   refreshStatus();
+  await refreshNet();
   setInterval(refreshStatus, 30000);
   loadApps().then(renderDevice);
 })();

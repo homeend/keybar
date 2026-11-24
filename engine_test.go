@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -100,5 +101,54 @@ func TestResetReleasesHeld(t *testing.T) {
 	e.handle(InputEvent{Type: evReset}) // ...device drops
 	if !released || len(e.held) != 0 || len(e.active) != 0 {
 		t.Fatalf("reset left state: released=%v held=%v active=%v", released, e.held, e.active)
+	}
+}
+
+func TestMigrateV3(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.json")
+	v3 := `{"version":3,"listen":"127.0.0.1:47830","columns":4,"bindings":[
+	 {"id":"k1","label":"Undo","icon":"↩","trigger":"KEY_K","group":"keys","x":0,"y":0,"w":1,"h":1,"action":{"type":"keys","keys":"ctrl+z"}},
+	 {"id":"k18","label":"Voice stop","trigger":"KEY_ENTER","group":"keys","x":3,"y":3,"w":1,"h":2,"action":{"type":"keys","keys":"super+alt+d"}}]}`
+	if err := os.WriteFile(p, []byte(v3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := LoadConfig(p).Get()
+	if c.Version != configVersion || len(c.Slots) != 2 || len(c.Layouts) != 1 || c.Bindings != nil {
+		t.Fatalf("bad migration: %+v", c)
+	}
+	k := c.Layouts[0].Keys["k1"]
+	if k.Label != "Undo" || k.Icon != "↩" || k.Action.Keys != "ctrl+z" || c.Slots[0].Trigger != "KEY_K" || c.Slots[1].H != 2 {
+		t.Fatalf("lost data: %+v %+v", k, c.Slots)
+	}
+}
+
+func TestLayoutSwitch(t *testing.T) {
+	store := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+	c := *store.Get()
+	c.Slots = append([]Slot(nil), c.Slots...)
+	c.Slots[3].Trigger = "KEY_B" // k1
+	a := newLayout("a", "A", c.Slots)
+	a.Keys["k1"] = Key{Label: "next", Action: Action{Type: "layout", Layout: "next"}}
+	b := newLayout("b", "B", c.Slots)
+	c.Layouts = []Layout{a, b}
+	c.ActiveLayout = "a"
+	store.cfg.ActiveLayout = "a"
+	if err := store.Set(&c); err != nil {
+		t.Fatal(err)
+	}
+	bus := NewBus()
+	ch, _ := bus.Subscribe()
+	e := NewEngine(store, &Emitter{}, bus)
+	e.handle(k(48, 1))
+	e.handle(k(48, 0))
+	if got := store.Get().ActiveLayout; got != "b" {
+		t.Fatalf("active = %s", got)
+	}
+	if ev1, ev2 := <-ch, <-ch; ev1.Binding != "k1" || ev2.Type != "layout" || ev2.Layout != "b" {
+		t.Fatalf("events %+v %+v", ev1, ev2)
+	}
+	if _, err := store.SwitchLayout("nope"); err == nil {
+		t.Fatal("expected error")
 	}
 }

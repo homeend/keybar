@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -93,20 +95,3 @@ func captureShortcut(ctx context.Context, skip DeviceMatch) string {
 	}
 }
 
-var modWords = []struct {
-	code uint16
-	word string
-}{{29, "ctrl"}, {97, "rctrl"}, {42, "shift"}, {54, "rshift"}, {56, "alt"}, {100, "altgr"}, {125, "super"}, {126, "rsuper"}}
-
-func shortcutString(mods map[uint16]bool, key uint16) string {
-	var parts []string
-	for _, m := range modWords {
-		if mods[m.code] {
-			parts = append(parts, m.word)
-		}
-	}
-	if key != 0 {
-		parts = append(parts, strings.ToLower(strings.TrimPrefix(keyName(key), "KEY_")))
-	}
-	return strings.Join(parts, "+")
-}

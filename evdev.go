@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -13,12 +15,6 @@ import (
 	"syscall"
 	"time"
 )
-
-type InputEvent struct {
-	Type  uint16
-	Code  uint16
-	Value int32
-}
 
 const (
 	eventSize = 24         // struct input_event on 64-bit: timeval(16) + type + code + value
@@ -109,12 +105,6 @@ type openDevice struct {
 	path, name string
 	file       *os.File
 	grabbed    bool
-}
-
-type DeviceInfo struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	Grabbed bool   `json:"grabbed"`
 }
 
 // DeviceManager finds the Keydial's event nodes, keeps them open across

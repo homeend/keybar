@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -33,13 +32,16 @@ func main() {
 		ensureRunning(addr)
 		openPanel(addr)
 	case "devices":
-		for _, d := range listInputDevices() {
-			fmt.Printf("%-40q vendor=%s product=%s %v\n", d.Name, d.Vendor, d.Product, d.Events)
+		printDevices()
+	case "install", "uninstall":
+		if err := autostart(cmd == "install"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 	case "version":
 		fmt.Println(version)
 	default:
-		fmt.Fprintf(os.Stderr, "usage: keybar [run|open|devices|version]\n")
+		fmt.Fprintf(os.Stderr, "usage: keybar [run|open|devices|install|uninstall|version]\n")
 		os.Exit(2)
 	}
 }
@@ -81,6 +83,15 @@ func run() {
 		bus.Publish(BusEvent{Type: "status"})
 	})
 	engine := NewEngine(store, em, bus)
+	ident, err := loadIdentity()
+	if err != nil {
+		log.Fatalf("identity: %v", err)
+	}
+	router := NewRouter(engine, nil, bus)
+	nw := NewNet(ident, loadPeers(), store.Get().PeerPort, router)
+	router.net = nw
+	engine.router = router
+	go nw.Run()
 	dm = NewDeviceManager(store, em, engine.in, func() { bus.Publish(BusEvent{Type: "status"}) })
 	engine.grabbed = dm.AnyGrabbed
 	dm.onClose = engine.Reset
@@ -94,31 +105,14 @@ func run() {
 	go engine.Run()
 	go dm.Run()
 
-	srv := &Server{store: store, engine: engine, dm: dm, em: em, bus: bus, addr: addr, token: newToken(), bat: -1}
+	srv := &Server{store: store, engine: engine, dm: dm, em: em, bus: bus, net: nw, router: router, addr: addr, token: newToken(), bat: -1}
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 
+	if os.Getenv("KEYBAR_NO_TRAY") != "" { // test copy: no tray icon
+		select {}
+	}
 	systray.Run(func() { onTrayReady(addr, dm, em) }, func() {})
 }
-
-// singleInstance holds an exclusive lock for the life of the process.
-func singleInstance() bool {
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		dir = os.TempDir()
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "keybar.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return true
-	}
-	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		f.Close()
-		return false
-	}
-	lockFile = f // keep open
-	return true
-}
-
-var lockFile *os.File
 
 // ensureRunning starts the background service if nothing answers on addr yet.
 func ensureRunning(addr string) {
@@ -132,12 +126,7 @@ func ensureRunning(addr string) {
 	if alive() {
 		return
 	}
-	if exec.Command("systemctl", "--user", "start", "keybar.service").Run() != nil {
-		exe, _ := os.Executable()
-		c := exec.Command(exe)
-		c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		c.Start()
-	}
+	startBackground()
 	for i := 0; i < 50 && !alive(); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -159,31 +148,19 @@ func recentlyOpened() bool {
 	return false
 }
 
-func openPanel(addr string) {
-	if recentlyOpened() {
-		return
-	}
-	url := "http://" + addr + "/"
-	for _, b := range []string{"google-chrome", "chromium", "chromium-browser", "microsoft-edge"} {
-		if p, err := exec.LookPath(b); err == nil {
-			if exec.Command(p, "--app="+url, "--class=keybar", "--window-size=1180,820").Start() == nil {
-				return
-			}
-		}
-	}
-	exec.Command("xdg-open", url).Start()
-}
-
 func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
 	systray.SetTitle("Keybar")
 	systray.SetTooltip("Keybar — Keydial button mapper")
-	systray.SetIcon(trayIcon("idle"))
+	systray.SetIcon(trayIconBytes("idle"))
 
 	status := systray.AddMenuItem("Keydial: …", "")
 	status.Disable()
 	systray.AddSeparator()
 	open := systray.AddMenuItem("Open control panel…", "")
 	pause := systray.AddMenuItemCheckbox("Pause mappings", "Give the Keydial back its factory keys", false)
+	if !hostSupported {
+		pause.Hide() // nothing to pause: presses come from another machine
+	}
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit Keybar", "")
 
@@ -213,6 +190,8 @@ func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
 			st, text := "idle", "Keydial: not connected"
 			devs := dm.Devices()
 			switch {
+			case !hostSupported:
+				st, text = "on", "Keybar: receives from paired machines"
 			case !em.Ready():
 				st, text = "warn", "Needs setup: virtual input (uinput) not accessible"
 			case dm.Paused():
@@ -223,7 +202,7 @@ func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
 				st = "off"
 			}
 			if st+text != last {
-				systray.SetIcon(trayIcon(st))
+				systray.SetIcon(trayIconBytes(st))
 				status.SetTitle(text)
 				last = st + text
 			}

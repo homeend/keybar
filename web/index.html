@@ -6,13 +6,15 @@
 <title>Keybar</title>
 <link rel="icon" href="/static/logo.svg">
 <link rel="stylesheet" href="/static/style.css">
-<script>window.KEYBAR_TOKEN = "__TOKEN__";</script>
+<script>window.KEYBAR_TOKEN = "__TOKEN__"; window.KEYBAR_HOST = __HOST__; window.KEYBAR_OS = "__OS__";</script>
 </head>
 <body>
 <header class="top">
   <div class="brand"><img src="/static/logo.svg" alt=""><span>Keybar</span></div>
   <div id="status" class="pill">…</div>
+  <button id="targetPill" class="pill target" title="Which machine the Keydial controls — click to manage machines">…</button>
   <div class="spacer"></div>
+  <button id="machinesBtn" class="btn ghost" title="Pair and switch between computers">🖧 Machines</button>
   <button id="learnAll" class="btn ghost" title="Walk through every slot and press the matching button on the device">Learn all buttons</button>
   <button id="settingsBtn" class="btn ghost" title="Settings">⚙︎</button>
 </header>
@@ -21,6 +23,8 @@
 
 <main>
   <section class="device-wrap">
+    <div class="layouts" id="layouts"></div>
+    <div class="layout-tools" id="layoutTools"></div>
     <div class="device" id="device">
       <div class="plate">
         <div class="dial" id="dial">
@@ -68,6 +72,39 @@
   <div class="row end">
     <button class="btn ghost" id="setClose">Close</button>
     <button class="btn primary" id="setSave">Save</button>
+  </div>
+</dialog>
+
+<dialog id="machinesDlg" class="machines">
+  <div class="row"><h3 style="margin:0">Machines</h3><div style="flex:1"></div><button class="btn ghost small" id="mClose">✕</button></div>
+  <div class="label">This machine</div>
+  <div class="row"><input id="myName" maxlength="64"><button class="btn small" id="myNameSave">Rename</button></div>
+  <div class="label">Paired</div>
+  <div id="pairedList" class="mlist"></div>
+  <div class="label">Nearby, not paired</div>
+  <div id="nearbyList" class="mlist"></div>
+  <p class="muted small">Machines running Keybar on the same network appear here by themselves. Traffic between paired machines is end-to-end encrypted; only paired machines can connect. If one doesn't show up, allow UDP 47832 and TCP 47831 through its firewall.</p>
+</dialog>
+
+<dialog id="pairDlg" class="pair">
+  <h3 id="pairTitle">Pair with …</h3>
+  <p class="muted">Check that both screens show the same code, then confirm on <b>both</b> machines.</p>
+  <div id="pairCode" class="code">--- ---</div>
+  <p id="pairState" class="muted small"></p>
+  <div class="row center">
+    <button class="btn ghost" id="pairNo">Doesn't match / cancel</button>
+    <button class="btn primary" id="pairYes">Codes match</button>
+  </div>
+</dialog>
+
+<dialog id="copyDlg" class="machines">
+  <div class="row"><h3 style="margin:0">Copy layouts</h3><div style="flex:1"></div><button class="btn ghost small" id="copyClose">✕</button></div>
+  <p id="copyIntro" class="muted"></p>
+  <label>From <select id="copyMachine"></select></label>
+  <div id="copyLayouts" class="mlist"></div>
+  <div class="row end" style="margin-top:14px">
+    <button class="btn ghost" onclick="document.getElementById('copyDlg').close()">Not now</button>
+    <button class="btn primary" id="copyGo">Copy selected</button>
   </div>
 </dialog>
 

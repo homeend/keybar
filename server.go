@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"embed"
@@ -11,8 +10,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +24,9 @@ type BusEvent struct {
 	Type    string `json:"type"` // trigger | learned | status
 	Trigger string `json:"trigger,omitempty"`
 	Binding string `json:"binding,omitempty"`
+	Layout  string `json:"layout,omitempty"`
+	From    string `json:"from,omitempty"` // machine that sent the press
+	To      string `json:"to,omitempty"`   // machine the press was sent to
 }
 
 type Bus struct {
@@ -73,6 +73,8 @@ type Server struct {
 	dm     *DeviceManager
 	em     *Emitter
 	bus    *Bus
+	net    *Net
+	router *Router
 	addr   string
 	token  string
 
@@ -125,7 +127,10 @@ func (s *Server) Handler() http.Handler {
 		b, _ := webFS.ReadFile("web/index.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Write([]byte(strings.Replace(string(b), "__TOKEN__", s.token, 1)))
+		page := strings.Replace(string(b), "__TOKEN__", s.token, 1)
+		page = strings.Replace(page, "__OS__", hostOS(), 1)
+		page = strings.Replace(page, "__HOST__", fmt.Sprint(hostSupported && os.Getenv("KEYBAR_FAKE_OS") == ""), 1)
+		w.Write([]byte(page))
 	})
 	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
 
@@ -145,6 +150,115 @@ func (s *Server) Handler() http.Handler {
 			s.dm.Reset()
 		}
 		writeJSON(w, s.store.Get())
+	})
+	mux.HandleFunc("POST /api/layout", func(w http.ResponseWriter, r *http.Request) {
+		var v struct{ Layout string }
+		json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&v)
+		l, err := s.store.SwitchLayout(v.Layout)
+		if err != nil {
+			httpErr(w, http.StatusBadRequest, err)
+			return
+		}
+		s.bus.Publish(BusEvent{Type: "layout", Layout: l.ID})
+		writeJSON(w, s.store.Get())
+	})
+	mux.HandleFunc("GET /api/net", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.net.State(s.router.Target())) })
+	type idReq struct {
+		ID   string `json:"id"`
+		OK   bool   `json:"ok"`
+		Name string `json:"name"`
+	}
+	netPost := func(path string, fn func(v idReq) error) {
+		mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
+			var v idReq
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&v); err != nil {
+				httpErr(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := fn(v); err != nil {
+				httpErr(w, http.StatusConflict, err)
+				return
+			}
+			writeJSON(w, s.net.State(s.router.Target()))
+		})
+	}
+	netPost("/api/net/pair", func(v idReq) error { return s.net.Pair(v.ID) })
+	netPost("/api/net/answer", func(v idReq) error { return s.net.Answer(v.ID, v.OK) })
+	netPost("/api/net/unpair", func(v idReq) error { s.net.Unpair(v.ID); return nil })
+	netPost("/api/net/target", func(v idReq) error { return s.router.SetTarget(v.ID, "") })
+	netPost("/api/net/name", func(v idReq) error {
+		n := strings.TrimSpace(v.Name)
+		if n == "" || len(n) > 64 {
+			return fmt.Errorf("name must be 1–64 characters")
+		}
+		err := s.net.SetName(n)
+		s.bus.Publish(BusEvent{Type: "net"})
+		return err
+	})
+	mux.HandleFunc("GET /api/net/layouts", func(w http.ResponseWriter, r *http.Request) {
+		m, err := s.net.Request(r.URL.Query().Get("id"), Msg{T: "get_layouts"}, 10*time.Second)
+		if err != nil {
+			httpErr(w, http.StatusBadGateway, err)
+			return
+		}
+		type item struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Assigned int    `json:"assigned"`
+		}
+		out := []item{}
+		for _, l := range m.Layouts {
+			n := 0
+			for _, k := range l.Keys {
+				if k.Action.Type != "none" && k.Action.Type != "" {
+					n++
+				}
+			}
+			out = append(out, item{l.ID, l.Name, n})
+		}
+		writeJSON(w, map[string]any{"os": m.OS, "layouts": out})
+	})
+	mux.HandleFunc("POST /api/net/import", func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			ID      string   `json:"id"`
+			Layouts []string `json:"layouts"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&v); err != nil {
+			httpErr(w, http.StatusBadRequest, err)
+			return
+		}
+		m, err := s.net.Request(v.ID, Msg{T: "get_layouts"}, 10*time.Second)
+		if err != nil {
+			httpErr(w, http.StatusBadGateway, err)
+			return
+		}
+		want := map[string]bool{}
+		for _, id := range v.Layouts {
+			want[id] = true
+		}
+		var pick []Layout
+		for _, l := range m.Layouts {
+			if want[l.ID] {
+				pick = append(pick, l)
+			}
+		}
+		if len(pick) == 0 {
+			httpErr(w, http.StatusBadRequest, fmt.Errorf("choose at least one layout"))
+			return
+		}
+		from := v.ID
+		if p := s.net.peers.Get(v.ID); p != nil {
+			from = p.Name
+		}
+		cur := s.store.Get()
+		imported, rep := importLayouts(pick, m.OS, from, cur.Layouts, listApps())
+		c := *cur
+		c.Layouts = append(append([]Layout(nil), cur.Layouts...), imported...)
+		if err := s.store.Set(&c); err != nil {
+			httpErr(w, http.StatusConflict, err)
+			return
+		}
+		writeJSON(w, map[string]any{"config": s.store.Get(), "report": rep, "first": imported[0].ID})
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.status()) })
 	mux.HandleFunc("POST /api/learn", func(w http.ResponseWriter, r *http.Request) {
@@ -267,139 +381,9 @@ func httpErr(w http.ResponseWriter, code int, err error) {
 	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 
-// ---------- installed applications ----------
-
+// App is an installed application the panel can offer.
 type App struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Icon string `json:"icon"`
-}
-
-func appDirs() []string {
-	home := os.Getenv("HOME")
-	dirs := []string{
-		filepath.Join(home, ".local/share/applications"),
-		filepath.Join(home, ".local/share/flatpak/exports/share/applications"),
-		"/var/lib/flatpak/exports/share/applications",
-		"/var/lib/snapd/desktop/applications",
-		"/usr/local/share/applications",
-		"/usr/share/applications",
-	}
-	return dirs
-}
-
-func listApps() []App {
-	seen := map[string]bool{}
-	apps := []App{}
-	for _, dir := range appDirs() {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".desktop") || seen[e.Name()] {
-				continue
-			}
-			seen[e.Name()] = true // earlier dirs override later ones
-			a, ok := parseDesktop(filepath.Join(dir, e.Name()))
-			if ok {
-				a.ID = e.Name()
-				apps = append(apps, a)
-			}
-		}
-	}
-	sort.Slice(apps, func(i, j int) bool { return strings.ToLower(apps[i].Name) < strings.ToLower(apps[j].Name) })
-	return apps
-}
-
-func parseDesktop(path string) (App, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return App{}, false
-	}
-	defer f.Close()
-	var a App
-	inEntry, isApp, hidden := false, false, false
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "[") {
-			inEntry = line == "[Desktop Entry]"
-			continue
-		}
-		if !inEntry {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "Name":
-			a.Name = v
-		case "Icon":
-			a.Icon = v
-		case "Type":
-			isApp = v == "Application"
-		case "NoDisplay", "Hidden":
-			if v == "true" {
-				hidden = true
-			}
-		}
-	}
-	return a, isApp && !hidden && a.Name != ""
-}
-
-func findIcon(name string) string {
-	if name == "" || strings.Contains(name, "..") {
-		return ""
-	}
-	okExt := func(p string) bool {
-		ext := strings.ToLower(filepath.Ext(p))
-		return ext == ".png" || ext == ".svg"
-	}
-	if filepath.IsAbs(name) {
-		home := os.Getenv("HOME")
-		allowed := false
-		for _, pre := range []string{"/usr/share/", "/snap/", "/var/lib/snapd/", "/var/lib/flatpak/", home + "/.local/share/"} {
-			allowed = allowed || strings.HasPrefix(name, pre)
-		}
-		if allowed && okExt(name) {
-			if _, err := os.Stat(name); err == nil {
-				return name
-			}
-		}
-		return ""
-	}
-	home := os.Getenv("HOME")
-	bases := []string{
-		filepath.Join(home, ".local/share/icons/hicolor"),
-		filepath.Join(home, ".local/share/flatpak/exports/share/icons/hicolor"),
-		"/var/lib/flatpak/exports/share/icons/hicolor",
-		"/usr/share/icons/hicolor",
-	}
-	sizes := []string{"scalable", "256x256", "128x128", "96x96", "64x64", "48x48", "512x512", "32x32"}
-	for _, b := range bases {
-		for _, sz := range sizes {
-			for _, ext := range []string{".svg", ".png"} {
-				p := filepath.Join(b, sz, "apps", name+ext)
-				if _, err := os.Stat(p); err == nil {
-					return p
-				}
-			}
-		}
-	}
-	for _, ext := range []string{".svg", ".png"} {
-		p := filepath.Join("/usr/share/pixmaps", name+ext)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// Themed fallback (e.g. Yaru) for system apps.
-	for _, theme := range []string{"Yaru", "Adwaita"} {
-		matches, _ := filepath.Glob(filepath.Join("/usr/share/icons", theme, "*", "apps", name+".*"))
-		for _, m := range matches {
-			if okExt(m) {
-				return m
-			}
-		}
-	}
-	return ""
 }
