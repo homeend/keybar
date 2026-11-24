@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keybar</title>
+<link rel="icon" href="/static/logo.svg">
+<link rel="stylesheet" href="/static/style.css">
+<script>window.KEYBAR_TOKEN = "__TOKEN__";</script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><img src="/static/logo.svg" alt=""><span>Keybar</span></div>
+  <div id="status" class="pill">…</div>
+  <div class="spacer"></div>
+  <button id="learnAll" class="btn ghost" title="Walk through every slot and press the matching button on the device">Learn all buttons</button>
+  <button id="settingsBtn" class="btn ghost" title="Settings">⚙︎</button>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <section class="device-wrap">
+    <div class="device" id="device">
+      <div class="plate">
+        <div class="dial" id="dial">
+          <button class="dial-part ccw" data-id="dial_ccw"><span>↺</span><small></small></button>
+          <button class="dial-part press" data-id="dial_press"><span>●</span><small></small></button>
+          <button class="dial-part cw" data-id="dial_cw"><span>↻</span><small></small></button>
+        </div>
+        <div class="wordmark" title="Keydial mini">HUION</div>
+      </div>
+      <div class="well"><div class="keys" id="keys"></div></div>
+    </div>
+    <p class="hint">Click a key or a part of the dial to set what it does.</p>
+  </section>
+
+  <aside class="panel" id="panel">
+    <div id="editor" hidden></div>
+    <div id="monitor">
+      <h2>Live</h2>
+      <p class="muted">Press any button on the Keydial: it lights up here.</p>
+      <ul id="log" class="log"></ul>
+    </div>
+  </aside>
+</main>
+
+<dialog id="learnDlg" class="learn">
+  <div class="pulse"></div>
+  <h3 id="learnTitle">Press the button on your Keydial…</h3>
+  <p id="learnSub" class="muted">It will be assigned to this slot.</p>
+  <div class="row center">
+    <button class="btn ghost" id="learnSkip" hidden>Skip</button>
+    <button class="btn ghost" id="learnCancel">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="settingsDlg" class="settings">
+  <h3>Settings</h3>
+  <label class="check"><input type="checkbox" id="setGrab"> Take over the device <span class="muted">(its factory shortcuts don't reach other apps)</span></label>
+  <label class="check"><input type="checkbox" id="setPass"> Unassigned buttons keep their factory shortcut</label>
+  <div class="grid2">
+    <label>USB vendor <input id="setVendor" placeholder="256c"></label>
+    <label>USB product <input id="setProduct" placeholder="8251"></label>
+  </div>
+  <label>Device name contains <input id="setName" placeholder="(optional)"></label>
+  <p class="muted small" id="setInfo"></p>
+  <div class="row end">
+    <button class="btn ghost" id="setClose">Close</button>
+    <button class="btn primary" id="setSave">Save</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<div id="elsewhere" class="elsewhere" hidden>
+  <div>
+    <img src="/static/logo.svg" alt="" width="48" height="48">
+    <h3>Keybar is open in another window</h3>
+    <p class="muted">Only one control panel runs at a time.</p>
+    <button class="btn primary" id="useHere">Use this window instead</button>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

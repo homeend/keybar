@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Keybar
+GenericName=Keydial button mapper
+Comment=Map the Huion Keydial buttons and dial to shortcuts, apps and commands
+Exec=keybar open
+Icon=keybar
+Terminal=false
+Categories=Settings;HardwareSettings;Utility;
+Keywords=huion;keydial;macro;shortcut;buttons;
+StartupWMClass=keybar
