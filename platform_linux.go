@@ -257,3 +257,22 @@ func findIcon(name string) string {
 	}
 	return ""
 }
+
+// osOverlay: GNOME has no overlay for ordinary apps, so this is a notification
+// that replaces itself as the selection changes.
+func osOverlay(title string, lines []string, sel int, hold bool) {
+	var b strings.Builder
+	for i, l := range lines {
+		switch {
+		case sel < 0:
+			b.WriteString(l + "\n")
+		case i == sel:
+			b.WriteString("▶  " + l + "\n")
+		default:
+			b.WriteString("     " + l + "\n")
+		}
+	}
+	go osdShow(title, strings.TrimSpace(b.String()))
+}
+
+func osOverlayHide() {} // the notification expires by itself

@@ -43,6 +43,10 @@ type Msg struct {
 	Name    string   `json:"name,omitempty"`
 	OS      string   `json:"os,omitempty"`
 	Layouts []Layout `json:"layouts,omitempty"`
+	// "picker": the machine list the host shows while the switch key is held
+	IDs   []string `json:"ids,omitempty"`
+	Names []string `json:"names,omitempty"`
+	Idx   int      `json:"idx,omitempty"`
 }
 
 // opening is sent in clear before the handshake and bound into it as the Noise

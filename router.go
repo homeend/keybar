@@ -119,12 +119,12 @@ func (r *Router) machineAction(what string) *activeTrigger {
 			if p == nil {
 				return
 			}
+			r.endPicker()
 			to := p.list[p.idx]
 			if !p.moved { // a quick tap goes back to the previous machine, like Alt+Tab
 				to = r.prevOr(p.list)
 			}
 			if to == r.Target() {
-				hidePicker()
 				return
 			}
 			r.SetTarget(to, "")
@@ -162,20 +162,38 @@ func (r *Router) move(d int) {
 	r.showPicker()
 }
 
+const pickerTitle = "Keydial → turn the dial, release to switch"
+
+// showPicker shows the machine list here and on the machine being controlled
+// (that's the screen the person is looking at).
 func (r *Router) showPicker() {
 	p := r.picker
-	var b strings.Builder
+	names := make([]string, len(p.list))
+	ids := make([]string, len(p.list))
 	for i, id := range p.list {
-		if i == p.idx {
-			b.WriteString("▶  " + r.name(id) + "\n")
-		} else {
-			b.WriteString("     " + r.name(id) + "\n")
+		names[i] = r.name(id)
+		ids[i] = id
+		if id == "" && r.net != nil {
+			ids[i] = r.net.id.ID
+			names[i] = r.net.id.Name
 		}
 	}
-	if len(p.list) == 1 {
-		b.WriteString("\nNo other machine connected.")
+	lines := append([]string(nil), names...)
+	lines[0] = r.name("") // "<name> (this machine)"
+	if len(lines) == 1 {
+		lines = append(lines, "(no other machine connected)")
 	}
-	showOSD("Keydial → turn the dial, release to switch", b.String())
+	overlayShow(pickerTitle, lines, p.idx, true)
+	if t := r.Target(); t != "" {
+		r.net.Send(t, Msg{T: "picker", On: true, IDs: ids, Names: names, Idx: p.idx})
+	}
+}
+
+func (r *Router) endPicker() {
+	overlayHide()
+	if t := r.Target(); t != "" {
+		r.net.Send(t, Msg{T: "picker", On: false})
+	}
 }
 
 // SetTarget makes a machine the one the Keydial controls.
@@ -203,7 +221,7 @@ func (r *Router) SetTarget(to, why string) error {
 		msg += " (" + r.name(from) + ": " + why + ")"
 	}
 	log.Print(msg)
-	showOSD(msg, "")
+	overlayShow(msg, nil, -1, false)
 	r.bus.Publish(BusEvent{Type: "net"})
 	return nil
 }
@@ -241,8 +259,21 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		r.releaseFrom(peerID)
 	case "active":
 		if m.On {
-			showOSD("Keydial from "+r.name(peerID)+" now controls this machine", "")
+			overlayShow("Keydial → this machine", []string{"controlled from " + r.name(peerID)}, -1, false)
 		}
+	case "picker":
+		if !m.On || len(m.Names) == 0 || len(m.Names) > 32 {
+			overlayHide()
+			break
+		}
+		lines := make([]string, len(m.Names))
+		for i, n := range m.Names {
+			lines[i] = clip(n, 64)
+			if i < len(m.IDs) && r.net != nil && m.IDs[i] == r.net.id.ID {
+				lines[i] += " (this machine)"
+			}
+		}
+		overlayShow(pickerTitle, lines, m.Idx, true)
 	}
 	return nil
 }
@@ -284,4 +315,18 @@ func showOSD(title, body string) {
 	go osdShow(title, body)
 }
 
-func hidePicker() { showOSD("Keydial: no change", "") }
+// overlayShow shows a title and optional list (sel = highlighted row, -1 none).
+// hold keeps it up until overlayHide; otherwise it disappears by itself.
+func overlayShow(title string, lines []string, sel int, hold bool) {
+	if quietDesktop {
+		return
+	}
+	osOverlay(title, lines, sel, hold)
+}
+
+func overlayHide() {
+	if quietDesktop {
+		return
+	}
+	osOverlayHide()
+}
