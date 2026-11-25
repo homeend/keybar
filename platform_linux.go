@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 // hostSupported: this OS can read the Keydial itself (not only receive from another machine).
@@ -61,31 +63,115 @@ func spawn(cmd string) {
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-var osd struct {
-	mu sync.Mutex
-	id string
+// ---------- notifications (GNOME, over D-Bus) ----------
+//
+// One Keybar notification at a time, driven by a single worker so updates are
+// shown in order and only the latest one counts. GNOME doesn't pop a banner
+// again when an existing notification is *replaced* after its banner has gone,
+// so a stale one is closed and a new one opened instead; only rapid updates
+// (turning the dial) replace in place while the banner is still on screen.
+
+type noteReq struct {
+	title, body string
+	d           time.Duration // 0 = keep until hidden (capped)
+	hide        bool
 }
 
-// showOSD shows (or replaces) a single Keybar notification.
-func osdShow(title, body string) {
-	func() {
-		osd.mu.Lock()
-		defer osd.mu.Unlock()
-		args := []string{"-a", "Keybar", "-p", "-t", "2500", "-h", "int:transient:1"}
-		if osd.id != "" {
-			args = append(args, "-r", osd.id)
-		}
-		args = append(args, title, body)
-		out, err := exec.Command("notify-send", args...).Output()
-		if err != nil {
-			return
-		}
-		if id := strings.TrimSpace(string(out)); id != "" {
-			if _, err := strconv.Atoi(id); err == nil {
-				osd.id = id
+var (
+	noteCh   = make(chan noteReq, 64)
+	noteOnce sync.Once
+)
+
+func noteSend(r noteReq) {
+	noteOnce.Do(func() { go noteWorker() })
+	select {
+	case noteCh <- r:
+	default: // worker stuck (no D-Bus?): drop rather than block the engine
+	}
+}
+
+func noteWorker() {
+	const (
+		iface     = "org.freedesktop.Notifications"
+		bannerFor = 3 * time.Second  // GNOME keeps a banner up about this long
+		holdMax   = 30 * time.Second // a held picker never outlives this
+	)
+	var (
+		conn    *dbus.Conn
+		id      uint32
+		shownAt time.Time
+		expire  <-chan time.Time
+	)
+	obj := func() dbus.BusObject {
+		if conn == nil {
+			c, err := dbus.ConnectSessionBus()
+			if err != nil {
+				log.Printf("notifications: %v", err)
+				return nil
 			}
+			conn = c
 		}
-	}()
+		return conn.Object(iface, "/org/freedesktop/Notifications")
+	}
+	closeCur := func() {
+		if id != 0 {
+			if o := obj(); o != nil {
+				o.Call(iface+".CloseNotification", 0, id)
+			}
+			id = 0
+		}
+	}
+	for {
+		select {
+		case r := <-noteCh:
+			for more := true; more; { // only the latest request matters
+				select {
+				case r2 := <-noteCh:
+					r = r2
+				default:
+					more = false
+				}
+			}
+			expire = nil
+			if r.hide {
+				closeCur()
+				continue
+			}
+			replace := uint32(0)
+			if id != 0 && time.Since(shownAt) < bannerFor {
+				replace = id // banner still visible: update it in place
+			} else {
+				closeCur()
+				shownAt = time.Now()
+			}
+			o := obj()
+			if o == nil {
+				continue
+			}
+			hints := map[string]dbus.Variant{"transient": dbus.MakeVariant(true), "urgency": dbus.MakeVariant(byte(1))}
+			d := r.d
+			if d == 0 {
+				d = holdMax
+			}
+			call := o.Call(iface+".Notify", 0, "Keybar", replace, "input-keyboard", r.title, r.body, []string{}, hints, int32(d/time.Millisecond))
+			if call.Err != nil {
+				log.Printf("notifications: %v", call.Err)
+				conn.Close()
+				conn, id = nil, 0
+				continue
+			}
+			call.Store(&id)
+			expire = time.After(d)
+		case <-expire:
+			closeCur()
+			expire = nil
+		}
+	}
+}
+
+// osdShow shows a short Keybar notification.
+func osdShow(title, body string) {
+	noteSend(noteReq{title: title, body: body, d: 2500 * time.Millisecond})
 }
 
 // singleInstance holds an exclusive lock for the life of the process.
@@ -272,7 +358,11 @@ func osOverlay(title string, lines []string, sel int, hold bool) {
 			b.WriteString("     " + l + "\n")
 		}
 	}
-	go osdShow(title, strings.TrimSpace(b.String()))
+	d := 2500 * time.Millisecond
+	if hold {
+		d = 0
+	}
+	noteSend(noteReq{title: title, body: strings.TrimSpace(b.String()), d: d})
 }
 
-func osOverlayHide() {} // the notification expires by itself
+func osOverlayHide() { noteSend(noteReq{hide: true}) }

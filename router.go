@@ -281,6 +281,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 			break
 		}
 		here := m.IDs[0] == r.net.id.ID
+		log.Printf("from %s: Keydial target is now %q (this machine: %v)", r.name(peerID), m.Name, here)
 		target := clip(m.Name, 64)
 		if here {
 			target = r.net.id.Name
@@ -302,6 +303,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 			overlayShow("Keydial → "+target, []string{"Keydial on " + r.name(peerID)}, -1, false)
 		}
 	case "picker":
+		log.Printf("from %s: picker on=%v idx=%d %v", r.name(peerID), m.On, m.Idx, m.Names)
 		if !m.On || len(m.Names) == 0 || len(m.Names) > 32 {
 			overlayHide()
 			break
@@ -387,7 +389,7 @@ func showOSD(title, body string) {
 	if quietDesktop {
 		return
 	}
-	go osdShow(title, body)
+	osdShow(title, body)
 }
 
 // overlayShow shows a title and optional list (sel = highlighted row, -1 none).

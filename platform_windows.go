@@ -74,7 +74,9 @@ var osd sync.Mutex
 
 // osdShow shows a Windows toast; toasts with the same tag replace each other.
 // Text is passed through environment variables, never into the script.
-func osdShow(title, body string) {
+func osdShow(title, body string) { go toast(title, body) }
+
+func toast(title, body string) {
 	osd.Lock()
 	defer osd.Unlock()
 	const script = `

@@ -126,6 +126,7 @@ var ov struct {
 func rgb(r, g, b byte) uintptr { return uintptr(r) | uintptr(g)<<8 | uintptr(b)<<16 }
 
 func osOverlay(title string, lines []string, sel int, hold bool) {
+	log.Printf("overlay: show %q %q sel=%d hold=%v", title, lines, sel, hold)
 	ov.once.Do(startOverlay)
 	<-ov.ready
 	if ov.hwnd == 0 {
@@ -138,6 +139,7 @@ func osOverlay(title string, lines []string, sel int, hold bool) {
 }
 
 func osOverlayHide() {
+	log.Printf("overlay: hide")
 	ov.once.Do(startOverlay)
 	<-ov.ready
 	if ov.hwnd == 0 {
