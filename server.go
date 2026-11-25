@@ -142,10 +142,19 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		old := s.store.Get()
+		if !s.router.host {
+			// Button links belong to the machine holding the Keydial; this
+			// panel's copy may be older than the last update from there.
+			links := old.Links()
+			for i := range c.Slots {
+				c.Slots[i].Trigger = links[c.Slots[i].ID]
+			}
+		}
 		if err := s.store.Set(&c); err != nil {
 			httpErr(w, http.StatusConflict, err)
 			return
 		}
+		s.router.LinksChanged()
 		if old.Grab != c.Grab || old.Device != c.Device {
 			s.dm.Reset()
 		}
@@ -216,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 		var v struct {
 			ID      string   `json:"id"`
 			Layouts []string `json:"layouts"`
+			Into    string   `json:"into"` // replace the keys of this layout instead of adding new ones
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&v); err != nil {
 			httpErr(w, http.StatusBadRequest, err)
@@ -247,7 +257,29 @@ func (s *Server) Handler() http.Handler {
 		cur := s.store.Get()
 		imported, rep := importLayouts(pick, m.OS, from, cur.Layouts, listApps())
 		c := *cur
-		c.Layouts = append(append([]Layout(nil), cur.Layouts...), imported...)
+		c.Layouts = append([]Layout(nil), cur.Layouts...)
+		if v.Into != "" {
+			dst := c.layout(v.Into)
+			if dst == nil {
+				httpErr(w, http.StatusBadRequest, fmt.Errorf("no layout %q here", v.Into))
+				return
+			}
+			if len(imported) != 1 {
+				httpErr(w, http.StatusBadRequest, fmt.Errorf("choose one layout to copy into %q", dst.Name))
+				return
+			}
+			src := imported[0]
+			for slot, k := range src.Keys { // "switch to the copied layout" now means this one
+				if k.Action.Type == "layout" && k.Action.Layout == src.ID {
+					k.Action.Layout = dst.ID
+					src.Keys[slot] = k
+				}
+			}
+			dst.Keys = src.Keys
+			imported = []Layout{*dst}
+		} else {
+			c.Layouts = append(c.Layouts, imported...)
+		}
 		if err := s.store.Set(&c); err != nil {
 			httpErr(w, http.StatusConflict, err)
 			return
@@ -265,9 +297,18 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.status()) })
 	mux.HandleFunc("POST /api/learn", func(w http.ResponseWriter, r *http.Request) {
-		var v struct{ Start bool }
+		var v struct {
+			Start bool
+			Slot  string
+		}
 		json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&v)
-		if v.Start {
+		if !s.router.host {
+			// The Keydial is on another machine: it listens for the press.
+			if err := s.router.RemoteLearn(v.Slot, v.Start); err != nil && v.Start {
+				httpErr(w, http.StatusConflict, err)
+				return
+			}
+		} else if v.Start {
 			s.engine.StartLearning()
 		} else {
 			s.engine.CancelLearning()

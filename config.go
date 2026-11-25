@@ -422,3 +422,59 @@ func (s *ConfigStore) SwitchLayout(to string) (Layout, error) {
 }
 
 func (s *ConfigStore) Path() string { return s.path }
+
+// Links returns which device signal each slot is linked to ("" = not linked).
+func (c *Config) Links() map[string]string {
+	m := make(map[string]string, len(c.Slots))
+	for _, s := range c.Slots {
+		m[s.ID] = s.Trigger
+	}
+	return m
+}
+
+// Link links a slot to a device signal, unlinking any other slot that had it.
+func (s *ConfigStore) Link(slotID, trigger string) error {
+	return s.edit(func(c *Config) bool {
+		found := false
+		for i := range c.Slots {
+			switch {
+			case c.Slots[i].ID == slotID:
+				c.Slots[i].Trigger, found = trigger, true
+			case trigger != "" && c.Slots[i].Trigger == trigger:
+				c.Slots[i].Trigger = ""
+			}
+		}
+		return found
+	})
+}
+
+// SetLinks replaces all links with the ones the machine holding the Keydial
+// reports. It returns whether anything changed.
+func (s *ConfigStore) SetLinks(links map[string]string) (bool, error) {
+	changed := false
+	err := s.edit(func(c *Config) bool {
+		for i := range c.Slots {
+			if t := links[c.Slots[i].ID]; t != c.Slots[i].Trigger {
+				c.Slots[i].Trigger, changed = t, true
+			}
+		}
+		return changed
+	})
+	return changed, err
+}
+
+// edit applies fn to a copy of the config and saves it if fn reports a change.
+func (s *ConfigStore) edit(fn func(*Config) bool) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	cur := *s.Get()
+	cur.Slots = append([]Slot(nil), cur.Slots...)
+	if !fn(&cur) {
+		return nil
+	}
+	if err := s.write(&cur); err != nil {
+		return err
+	}
+	s.install(&cur)
+	return nil
+}

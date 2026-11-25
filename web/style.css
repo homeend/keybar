@@ -193,3 +193,5 @@ dialog.pair { width: min(420px, calc(100vw - 32px)); text-align: center; }
 .layout-tools .btn { white-space: nowrap; }
 .key .warn.info { color: #5aa2ff; }
 .warnbox.info { background: color-mix(in srgb, #5aa2ff 14%, transparent); }
+.linkbox.off { background: transparent; border-style: dashed; border-color: var(--border); background: var(--surface2); }
+#copyDlg label + label { margin-top: 8px; }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +35,18 @@ type Router struct {
 	// Where another machine's Keydial is pointed, as that machine last told us.
 	smu  sync.Mutex
 	seen *RemoteTarget
+
+	// host: this machine reads the Keydial, so it owns which button is linked
+	// to which slot and tells the others.
+	host      bool
+	lmu       sync.Mutex
+	sentLinks string       // links last sent to every machine (JSON)
+	learnFor  *remoteLearn // another machine's panel is linking a slot
+}
+
+type remoteLearn struct {
+	peer, slot string
+	until      time.Time
 }
 
 // RemoteTarget is shown on machines that receive from another machine's Keydial.
@@ -67,7 +82,8 @@ type picker struct {
 const pickerTimeout = 10 * time.Second
 
 func NewRouter(e *Engine, n *Net, bus *Bus) *Router {
-	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
+	host := hostSupported && os.Getenv("KEYBAR_FAKE_OS") == ""
+	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}, host: host}
 }
 
 func (r *Router) Target() string {
@@ -326,6 +342,37 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		}
 	case "release_all":
 		r.releaseFrom(peerID)
+	case "links":
+		if r.host || m.Links == nil {
+			break // this machine has its own Keydial links
+		}
+		changed, err := r.e.store.SetLinks(m.Links)
+		if err != nil {
+			log.Printf("links from %s: %v", r.name(peerID), err)
+		} else if changed {
+			log.Printf("button links updated by %s", r.name(peerID))
+			r.bus.Publish(BusEvent{Type: "config"})
+		}
+	case "learn":
+		if !r.host {
+			break
+		}
+		r.lmu.Lock()
+		if m.On {
+			r.learnFor = &remoteLearn{peer: peerID, slot: m.Slot, until: time.Now().Add(time.Minute)}
+		} else if r.learnFor != nil && r.learnFor.peer == peerID {
+			r.learnFor = nil
+		}
+		r.lmu.Unlock()
+		if m.On {
+			r.e.StartLearning()
+		} else {
+			r.e.CancelLearning()
+		}
+	case "learned":
+		if !r.host {
+			r.bus.Publish(BusEvent{Type: "learned", Trigger: m.Trigger, Binding: m.Slot})
+		}
 	case "target":
 		if len(m.IDs) != 1 || r.net == nil {
 			break
@@ -413,13 +460,16 @@ func (r *Router) PeerDown(peerID string) {
 }
 
 // PeerUp tells a machine that just connected where the Keydial is pointed.
-func (r *Router) PeerUp(peerID string) { r.announce(peerID, false) }
+func (r *Router) PeerUp(peerID string) {
+	r.announce(peerID, false)
+	r.shareLinks(peerID)
+}
 
 // announce tells connected machines (or just one) which machine the Keydial
 // controls, so each can show it. Only a machine that reads a Keydial has one.
 // show asks them to display it even if it didn't change ("stays on").
 func (r *Router) announce(only string, show bool) {
-	if !hostSupported || r.net == nil {
+	if !r.host || r.net == nil {
 		return
 	}
 	t := r.Target()
@@ -433,6 +483,72 @@ func (r *Router) announce(only string, show bool) {
 		return
 	}
 	r.broadcast(m)
+}
+
+// ---------- button links ----------
+
+// shareLinks sends this machine's button links to one machine, or to all of
+// them if they changed since last sent. Only the machine holding the Keydial
+// has links worth sharing; the others show and enforce them in their panels.
+func (r *Router) shareLinks(only string) {
+	if !r.host || r.net == nil {
+		return
+	}
+	links := r.e.store.Get().Links()
+	b, _ := json.Marshal(links)
+	m := Msg{T: "links", Links: links}
+	if only != "" {
+		r.net.Send(only, m)
+		return
+	}
+	r.lmu.Lock()
+	same := r.sentLinks == string(b)
+	r.sentLinks = string(b)
+	r.lmu.Unlock()
+	if !same {
+		r.broadcast(m)
+	}
+}
+
+// LinksChanged is called after the config was saved here.
+func (r *Router) LinksChanged() { r.shareLinks("") }
+
+// errNoHost: linking needs the machine the Keydial is plugged into.
+var errNoHost = errors.New("the computer the Keydial is plugged into isn't connected")
+
+// RemoteLearn asks the machine holding the Keydial to link the next button
+// pressed to slot (or to stop waiting). Used by panels on other machines.
+func (r *Router) RemoteLearn(slot string, on bool) error {
+	r.smu.Lock()
+	s := r.seen
+	r.smu.Unlock()
+	if s == nil || r.net == nil || !r.net.Online(s.HostID) {
+		return errNoHost
+	}
+	return r.net.Send(s.HostID, Msg{T: "learn", Slot: slot, On: on})
+}
+
+// learned is called on the host with a press captured in learn mode. It
+// returns true if another machine's panel asked for it and it was linked here.
+func (r *Router) learned(sig string) bool {
+	r.lmu.Lock()
+	lf := r.learnFor
+	r.learnFor = nil
+	r.lmu.Unlock()
+	if lf == nil || time.Now().After(lf.until) {
+		return false
+	}
+	if err := r.e.store.Link(lf.slot, sig); err != nil {
+		log.Printf("link %s for %s: %v", lf.slot, r.name(lf.peer), err)
+		return false
+	}
+	log.Printf("linked %s -> %s (asked by %s)", sig, lf.slot, r.name(lf.peer))
+	r.bus.Publish(BusEvent{Type: "config"})
+	r.shareLinks("")
+	if r.net != nil {
+		r.net.Send(lf.peer, Msg{T: "learned", Slot: lf.slot, Trigger: sig})
+	}
+	return true
 }
 
 func (r *Router) Changed() { r.bus.Publish(BusEvent{Type: "net"}) }

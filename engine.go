@@ -211,7 +211,9 @@ func (e *Engine) tap(sig string, passDown func()) {
 // press resolves a trigger and starts its action; the returned release runs on button-up.
 func (e *Engine) press(sig string, passDown, passUp func()) *activeTrigger {
 	if until := e.learnUntil.Load(); until > time.Now().UnixNano() && e.learnUntil.CompareAndSwap(until, 0) {
-		e.bus.Publish(BusEvent{Type: "learned", Trigger: sig})
+		if e.router == nil || !e.router.learned(sig) {
+			e.bus.Publish(BusEvent{Type: "learned", Trigger: sig})
+		}
 		return &activeTrigger{}
 	}
 	slot := e.store.SlotByTrigger(sig)

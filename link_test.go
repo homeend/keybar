@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"net"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -328,4 +329,120 @@ func TestPickerReachesEveryMachine(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// The machine with the Keydial sends its button links to the others, and a
+// panel on another machine can link a button: the press is captured there.
+func TestLinksAndRemoteLearn(t *testing.T) {
+	mk := func(links map[string]string) (*ConfigStore, *Engine, *Router, *Bus) {
+		store := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+		c := *store.Get()
+		c.Slots = append([]Slot(nil), c.Slots...)
+		for i := range c.Slots {
+			c.Slots[i].Trigger = links[c.Slots[i].ID]
+		}
+		if err := store.Set(&c); err != nil {
+			t.Fatal(err)
+		}
+		bus := NewBus()
+		e := NewEngine(store, &Emitter{}, bus)
+		return store, e, NewRouter(e, nil, bus), bus
+	}
+	sa, ea, ra, _ := mk(map[string]string{"k2": "KEY_G"})
+	sb, _, rb, busB := mk(map[string]string{"k5": "KEY_STALE"})
+	ra.host, rb.host = true, false
+	evB, stop := busB.Subscribe()
+	defer stop()
+
+	na, _, _ := testNet(t, "aaaa", ra)
+	ra.net, ea.router = na, ra
+	nb, _, bAddr := testNet(t, "bbbb", rb)
+	rb.net = nb
+	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
+	nb.peers.Put(Peer{ID: "aaaa", Name: "A", Public: na.id.Public})
+	go na.connect(*na.peers.Get("bbbb"), bAddr)
+
+	// On connect B takes A's links, replacing its own stale ones.
+	waitFor(t, "links on B", func() bool {
+		l := sb.Get().Links()
+		return l["k2"] == "KEY_G" && l["k5"] == ""
+	})
+	// B's panel can't change links by saving its config.
+	if rb.host {
+		t.Fatal("B must be a receiver")
+	}
+
+	// B's panel links k13: A captures the next press (Shift) and links it there.
+	waitFor(t, "B knows A holds the Keydial", func() bool { return rb.RemoteLearn("k13", true) == nil })
+	waitFor(t, "A in learn mode", func() bool { return ea.learnUntil.Load() != 0 })
+	ea.handle(k(42, 1)) // KEY_LEFTSHIFT
+	ea.handle(k(42, 0))
+	waitFor(t, "linked on A", func() bool { return sa.Get().Links()["k13"] == "KEY_LEFTSHIFT" })
+	waitFor(t, "linked on B", func() bool { return sb.Get().Links()["k13"] == "KEY_LEFTSHIFT" })
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-evB:
+			if ev.Type == "learned" && ev.Trigger == "KEY_LEFTSHIFT" && ev.Binding == "k13" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("B's panel was not told the button was linked")
+		}
+	}
+}
+
+// "Copy from…" into an existing layout replaces its keys with one translated
+// layout, keeping its ID, name and place.
+func TestImportIntoLayout(t *testing.T) {
+	src := LoadConfig(filepath.Join(t.TempDir(), "a.json"))
+	c := *src.Get()
+	c.Layouts = []Layout{newLayout("default", "Default", c.Slots)}
+	c.Layouts[0].Keys["k3"] = Key{Label: "Esc", Action: Action{Type: "keys", Keys: "esc"}}
+	c.Layouts[0].Keys["k4"] = Key{Label: "Again", Action: Action{Type: "layout", Layout: "default"}}
+	if err := src.Set(&c); err != nil {
+		t.Fatal(err)
+	}
+	busA := NewBus()
+	ra := NewRouter(NewEngine(src, &Emitter{}, busA), nil, busA)
+	na, _, _ := testNet(t, "aaaa", ra)
+	ra.net = na
+
+	dst := LoadConfig(filepath.Join(t.TempDir(), "b.json"))
+	d := *dst.Get()
+	d.Layouts = []Layout{newLayout("mine", "Mine", d.Slots), newLayout("other", "Other", d.Slots)}
+	d.Layouts[0].Keys["k1"] = Key{Label: "Old", Action: Action{Type: "keys", Keys: "ctrl+c"}}
+	if err := dst.Set(&d); err != nil {
+		t.Fatal(err)
+	}
+	busB := NewBus()
+	rb := NewRouter(NewEngine(dst, &Emitter{}, busB), nil, busB)
+	nb, _, bAddr := testNet(t, "bbbb", rb)
+	rb.net = nb
+	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
+	nb.peers.Put(Peer{ID: "aaaa", Name: "A", Public: na.id.Public})
+	go na.connect(*na.peers.Get("bbbb"), bAddr)
+	waitFor(t, "session", func() bool { return na.Online("bbbb") && nb.Online("aaaa") })
+
+	s := &Server{store: dst, bus: busB, net: nb, router: rb, token: "t", addr: "127.0.0.1:1"}
+	h := s.Handler()
+	req := httptest.NewRequest("POST", "/api/net/import", strings.NewReader(`{"id":"aaaa","layouts":["default"],"into":"mine"}`))
+	req.Host = "127.0.0.1:1"
+	req.Header.Set("X-Token", "t")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("import: %d %s", w.Code, w.Body)
+	}
+	got := dst.Get()
+	if len(got.Layouts) != 2 || got.Layouts[0].ID != "mine" || got.Layouts[0].Name != "Mine" {
+		t.Fatalf("layouts: %+v", got.Layouts)
+	}
+	keys := got.Layouts[0].Keys
+	if keys["k3"].Action.Keys != "esc" || keys["k1"].Action.Type != "none" {
+		t.Fatalf("keys not replaced: k1=%+v k3=%+v", keys["k1"], keys["k3"])
+	}
+	if keys["k4"].Action.Layout != "mine" {
+		t.Fatalf("self-switch should point at the replaced layout: %+v", keys["k4"].Action)
+	}
 }

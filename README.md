@@ -50,6 +50,13 @@ presses and runs them with **their own** active layout.
    and releasing does the same in one go. Any other key, or 10 seconds, closes the
    picker without switching.
 
+Which physical button is which key (its *link*) is stored only on the computer the
+Keydial is plugged into, and sent to the others. A key that isn't linked there shows
+*Not linked* on every machine and can't be given an action until it is: select it
+and press the button. This works from any machine's panel while the Keydial's
+computer is connected. To bring a layout over again, use **Copy from…** → *Into:
+Replace the keys of …*.
+
 Security: discovery beacons carry no secrets. Pairing uses the Noise protocol (XX)
 with a 6-digit comparison code; afterwards every connection uses Noise KK, so only
 paired machines can connect and all traffic is encrypted. Keys live in

@@ -48,6 +48,10 @@ type Msg struct {
 	Names []string `json:"names,omitempty"`
 	Idx   int      `json:"idx,omitempty"`
 	Title string   `json:"title,omitempty"`
+	// "links": which button each slot is linked to, from the machine holding the
+	// Keydial; "learn"/"learned": linking a slot from another machine's panel
+	Links   map[string]string `json:"links,omitempty"`
+	Trigger string            `json:"trigger,omitempty"`
 }
 
 // opening is sent in clear before the handshake and bound into it as the Noise
