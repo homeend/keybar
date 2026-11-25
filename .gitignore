@@ -1,2 +1,4 @@
 /keybar
 /keybar.exe
+/logs/
+*.log

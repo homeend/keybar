@@ -74,6 +74,10 @@ keybar.exe install       :: start at sign-in (uninstall: keybar.exe uninstall)
 `make test-peer` starts a second Keybar on this computer that pretends to be a
 Windows machine (panel http://127.0.0.1:47840, actions only logged).
 
+## Logs
+`collect-logs.cmd` (Windows) / `./collect-logs.sh` (Linux) copy the current and the
+previous run's log into `logs/` in this folder (git-ignored), named after the computer.
+
 ## Files
 - Config: `~/.config/keybar/config.json`; log: `~/.cache/keybar/keybar.log`
 - `make restart`, `make logs`, `make uninstall`; `keybar devices` lists input devices.
