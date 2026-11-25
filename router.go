@@ -194,6 +194,7 @@ func (r *Router) confirmPicker() {
 	to := p.list[p.idx]
 	if to == r.Target() {
 		overlayShow("Keydial stays on "+r.name(to), nil, -1, false)
+		r.announce("", true) // other screens: show the (unchanged) result too
 		return
 	}
 	r.SetTarget(to, "")
@@ -246,15 +247,24 @@ func (r *Router) showPicker() {
 		title = pickerTitleSticky
 	}
 	overlayShow(title, lines, p.idx, true)
-	if t := r.Target(); t != "" {
-		r.net.Send(t, Msg{T: "picker", On: true, IDs: ids, Names: names, Idx: p.idx, Title: title})
-	}
+	r.broadcast(Msg{T: "picker", On: true, IDs: ids, Names: names, Idx: p.idx, Title: title})
 }
 
 func (r *Router) endPicker() {
 	overlayHide()
-	if t := r.Target(); t != "" {
-		r.net.Send(t, Msg{T: "picker", On: false})
+	r.broadcast(Msg{T: "picker", On: false})
+}
+
+// broadcast sends a message to every connected paired machine: the person may
+// be looking at any of the screens.
+func (r *Router) broadcast(m Msg) {
+	if r.net == nil {
+		return
+	}
+	for _, p := range r.net.peers.List() {
+		if r.net.Online(p.ID) {
+			r.net.Send(p.ID, m)
+		}
 	}
 }
 
@@ -274,7 +284,7 @@ func (r *Router) SetTarget(to, why string) error {
 	if from != "" && r.net != nil {
 		r.net.Send(from, Msg{T: "release_all"})
 	}
-	r.announce("")
+	r.announce("", false)
 	msg := "Keydial → " + r.name(to)
 	if why != "" {
 		msg += " (" + r.name(from) + ": " + why + ")"
@@ -331,16 +341,20 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		r.seen = &RemoteTarget{HostID: peerID, Host: r.name(peerID), Target: target, Here: here}
 		r.smu.Unlock()
 		r.bus.Publish(BusEvent{Type: "net"})
-		if prev != nil && prev.HostID == peerID && prev.Target == target && prev.Here == here {
-			break // nothing changed (e.g. reconnect)
-		}
+		same := prev != nil && prev.HostID == peerID && prev.Target == target && prev.Here == here
 		switch {
+		case same && !m.On:
+			// nothing changed (e.g. reconnect)
+		case same && here:
+			overlayShow("Keydial stays on this machine", []string{"from " + r.name(peerID)}, -1, false)
+		case same:
+			overlayShow("Keydial stays on "+target, nil, -1, false)
 		case here:
 			overlayShow("Keydial → this machine", []string{"from " + r.name(peerID)}, -1, false)
 		case prev != nil && prev.Here:
 			overlayShow("Keydial → "+target, []string{"no longer controlling this machine"}, -1, false)
 		case prev != nil:
-			overlayShow("Keydial → "+target, []string{"Keydial on " + r.name(peerID)}, -1, false)
+			overlayShow("Keydial → "+target, nil, -1, false)
 		}
 	case "picker":
 		log.Printf("from %s: picker on=%v idx=%d %v", r.name(peerID), m.On, m.Idx, m.Names)
@@ -399,11 +413,12 @@ func (r *Router) PeerDown(peerID string) {
 }
 
 // PeerUp tells a machine that just connected where the Keydial is pointed.
-func (r *Router) PeerUp(peerID string) { r.announce(peerID) }
+func (r *Router) PeerUp(peerID string) { r.announce(peerID, false) }
 
 // announce tells connected machines (or just one) which machine the Keydial
 // controls, so each can show it. Only a machine that reads a Keydial has one.
-func (r *Router) announce(only string) {
+// show asks them to display it even if it didn't change ("stays on").
+func (r *Router) announce(only string, show bool) {
 	if !hostSupported || r.net == nil {
 		return
 	}
@@ -412,16 +427,12 @@ func (r *Router) announce(only string) {
 	if t == "" {
 		id, name = r.net.id.ID, r.net.id.Name
 	}
-	m := Msg{T: "target", IDs: []string{id}, Name: name}
+	m := Msg{T: "target", IDs: []string{id}, Name: name, On: show}
 	if only != "" {
 		r.net.Send(only, m)
 		return
 	}
-	for _, p := range r.net.peers.List() {
-		if r.net.Online(p.ID) {
-			r.net.Send(p.ID, m)
-		}
-	}
+	r.broadcast(m)
 }
 
 func (r *Router) Changed() { r.bus.Publish(BusEvent{Type: "net"}) }

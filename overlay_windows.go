@@ -121,6 +121,8 @@ var ov struct {
 	sel   int
 	hold  bool
 	show  bool
+	seq   int // bumped on every show/hide request
+	armed int // seq the auto-hide timer belongs to (window thread)
 }
 
 func rgb(r, g, b byte) uintptr { return uintptr(r) | uintptr(g)<<8 | uintptr(b)<<16 }
@@ -134,6 +136,7 @@ func osOverlay(title string, lines []string, sel int, hold bool) {
 	}
 	ov.mu.Lock()
 	ov.title, ov.lines, ov.sel, ov.hold, ov.show = title, append([]string(nil), lines...), sel, hold, true
+	ov.seq++
 	ov.mu.Unlock()
 	procPostMessageW.Call(ov.hwnd, wmApp, 0, 0)
 }
@@ -147,6 +150,7 @@ func osOverlayHide() {
 	}
 	ov.mu.Lock()
 	ov.show = false
+	ov.seq++
 	ov.mu.Unlock()
 	procPostMessageW.Call(ov.hwnd, wmApp, 0, 0)
 }
@@ -209,6 +213,7 @@ func overlayLayout(h uintptr) {
 	n := len(ov.lines)
 	show := ov.show
 	hold := ov.hold
+	seq := ov.seq
 	ov.mu.Unlock()
 	if !show {
 		procKillTimer.Call(h, hideTimer)
@@ -231,7 +236,8 @@ func overlayLayout(h uintptr) {
 	procInvalidateRect.Call(h, 0, 1)
 	procKillTimer.Call(h, hideTimer)
 	if !hold {
-		procSetTimer.Call(h, hideTimer, 1400, 0)
+		ov.armed = seq
+		procSetTimer.Call(h, hideTimer, 2200, 0)
 	}
 }
 
@@ -242,8 +248,11 @@ func overlayProc(h, msg, wp, lp uintptr) uintptr {
 		return 0
 	case wmTimer:
 		if wp == hideTimer {
+			procKillTimer.Call(h, hideTimer)
 			ov.mu.Lock()
-			ov.show = false
+			if ov.seq == ov.armed { // a newer message (e.g. the picker) keeps its own lifetime
+				ov.show = false
+			}
 			ov.mu.Unlock()
 			overlayLayout(h)
 		}

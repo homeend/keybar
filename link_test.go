@@ -289,3 +289,43 @@ func TestImportLayouts(t *testing.T) {
 }
 
 func init() { quietDesktop = true } // never pop notifications during tests
+
+func TestPickerReachesEveryMachine(t *testing.T) {
+	store := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+	c := *store.Get()
+	c.Slots = append([]Slot(nil), c.Slots...)
+	for i := range c.Slots {
+		if c.Slots[i].ID == "k2" {
+			c.Slots[i].Trigger = "KEY_G"
+		}
+	}
+	c.Layouts = []Layout{newLayout("default", "Default", c.Slots)}
+	c.Layouts[0].Keys["k2"] = Key{Action: Action{Type: "machine", Machine: "pick"}}
+	if err := store.Set(&c); err != nil {
+		t.Fatal(err)
+	}
+	bus := NewBus()
+	e := NewEngine(store, &Emitter{}, bus)
+	r := NewRouter(e, nil, bus)
+	na, _, _ := testNet(t, "aaaa", r)
+	r.net, e.router = na, r
+	nb, bEv, bAddr := testNet(t, "bbbb")
+	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
+	nb.peers.Put(Peer{ID: "aaaa", Name: "A", Public: na.id.Public})
+	go na.connect(*na.peers.Get("bbbb"), bAddr)
+	waitFor(t, "session", func() bool { return na.Online("bbbb") && nb.Online("aaaa") })
+
+	// The Keydial controls A (target ""), yet B — another screen — sees the picker.
+	e.handle(k(34, 1))
+	e.handle(k(34, 0))
+	waitFor(t, "picker on B", func() bool {
+		bEv.mu.Lock()
+		defer bEv.mu.Unlock()
+		for _, m := range bEv.msgs {
+			if m.T == "picker" && m.On && len(m.Names) == 2 {
+				return true
+			}
+		}
+		return false
+	})
+}
