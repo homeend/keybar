@@ -47,6 +47,7 @@ type Msg struct {
 	IDs   []string `json:"ids,omitempty"`
 	Names []string `json:"names,omitempty"`
 	Idx   int      `json:"idx,omitempty"`
+	Title string   `json:"title,omitempty"`
 }
 
 // opening is sent in clear before the handshake and bound into it as the Noise

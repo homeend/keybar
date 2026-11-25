@@ -54,6 +54,9 @@ func (e *Engine) Run() {
 func (e *Engine) StartLearning()  { e.learnUntil.Store(time.Now().Add(time.Minute).UnixNano()) }
 func (e *Engine) CancelLearning() { e.learnUntil.Store(0) }
 
+// evPickerTimeout closes a machine picker left open (Value = its generation).
+const evPickerTimeout = 0xfffe
+
 // evReset is an internal pseudo-event: the device went away, forget everything held.
 const evReset = 0xffff
 
@@ -61,6 +64,10 @@ func (e *Engine) Reset() { e.in <- InputEvent{Type: evReset} }
 
 func (e *Engine) handle(ev InputEvent) {
 	switch ev.Type {
+	case evPickerTimeout:
+		if e.router != nil {
+			e.router.PickerTimeout(int(ev.Value))
+		}
 	case evReset:
 		for _, at := range e.active {
 			if at.release != nil {

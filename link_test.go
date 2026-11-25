@@ -168,6 +168,7 @@ func TestRouting(t *testing.T) {
 	ea, ra, na, _, _ := mk("aaaa", func(c *Config) {
 		slot(c, "k1").Trigger = "KEY_B"
 		slot(c, "k2").Trigger = "KEY_G"
+		slot(c, "dial_cw").Trigger = "REL_WHEEL:up"
 		c.Layouts[0].Keys["k2"] = Key{Label: "switch", Action: Action{Type: "machine", Machine: "next"}}
 	})
 	_, rb, nb, chB, bAddr := mk("bbbb", func(c *Config) {
@@ -182,6 +183,33 @@ func TestRouting(t *testing.T) {
 	ea.handle(k(34, 0))
 	if ra.Target() != "bbbb" {
 		t.Fatalf("target = %q", ra.Target())
+	}
+
+	// The picker: a tap opens it and switches nothing; the dial moves the
+	// selection; a second press switches. Another key closes it untouched.
+	ea.store.cfg.Layouts[0].Keys["k2"] = Key{Action: Action{Type: "machine", Machine: "pick"}}
+	wheel := func(v int32) { ea.handle(InputEvent{Type: evRel, Code: relWheel, Value: v}) }
+	tap := func(code uint16) { ea.handle(k(code, 1)); ea.handle(k(code, 0)) }
+	tap(34)
+	if ra.picker == nil || !ra.picker.sticky || ra.Target() != "bbbb" {
+		t.Fatalf("tap: picker=%+v target=%q", ra.picker, ra.Target())
+	}
+	wheel(1) // dial_cw → the other machine (this one)
+	tap(34)
+	if ra.picker != nil || ra.Target() != "" {
+		t.Fatalf("confirm: picker=%+v target=%q", ra.picker, ra.Target())
+	}
+	tap(34)
+	wheel(1)
+	tap(48) // B (k1): closes the picker, no switch
+	if ra.picker != nil || ra.Target() != "" {
+		t.Fatalf("cancel: picker=%+v target=%q", ra.picker, ra.Target())
+	}
+	ea.handle(k(34, 1)) // hold, turn, release: switches at once
+	wheel(1)
+	ea.handle(k(34, 0))
+	if ra.picker != nil || ra.Target() != "bbbb" {
+		t.Fatalf("hold-turn-release: picker=%+v target=%q", ra.picker, ra.Target())
 	}
 	waitFor(t, "B told it's controlled", func() bool { s := rb.Seen(); return s != nil && s.Here && s.HostID == "aaaa" })
 	ea.handle(k(48, 1)) // B: k1, should run on B with B's layout

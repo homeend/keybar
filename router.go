@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Router decides which machine a Keydial press goes to. The machine the device
@@ -22,7 +23,8 @@ type Router struct {
 	target string // "" = this machine
 	prev   string
 
-	picker *picker // only touched from the engine goroutine
+	picker    *picker // only touched from the engine goroutine
+	pickerGen int
 
 	rmu    sync.Mutex
 	remote map[string]func() // "peer/slot" → release, for presses sent to us
@@ -50,11 +52,19 @@ func (r *Router) Seen() *RemoteTarget {
 	return &cp
 }
 
+// picker: pressing the pick key opens it. Turning the dial while the key is
+// held and then releasing switches at once; releasing without turning leaves
+// it open ("sticky"): turn the dial, then press the pick key or the dial to
+// switch. Any other key, or pickerTimeout, closes it without switching.
 type picker struct {
-	list  []string // machine IDs, "" = this machine
-	idx   int
-	moved bool
+	list   []string // machine IDs, "" = this machine
+	idx    int
+	moved  bool // turned while the pick key was held
+	sticky bool // open after a tap, waiting for a confirming press
+	gen    int  // identifies this picker for its timeout
 }
+
+const pickerTimeout = 10 * time.Second
 
 func NewRouter(e *Engine, n *Net, bus *Bus) *Router {
 	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
@@ -73,13 +83,19 @@ func (r *Router) route(slotID string, passDown, passUp func()) *activeTrigger {
 		return r.machineAction(key.Action.Machine)
 	}
 	if p := r.picker; p != nil {
-		switch slotID {
-		case "dial_cw":
+		switch {
+		case slotID == "dial_cw":
 			r.move(1)
 			return &activeTrigger{}
-		case "dial_ccw":
+		case slotID == "dial_ccw":
 			r.move(-1)
 			return &activeTrigger{}
+		case slotID == "dial_press" && p.sticky:
+			r.confirmPicker()
+			return &activeTrigger{}
+		case p.sticky: // another key: close the picker, then do the key's job
+			r.picker = nil
+			r.endPicker()
 		}
 	}
 	if t := r.Target(); t != "" {
@@ -133,23 +149,31 @@ func (r *Router) machineAction(what string) *activeTrigger {
 		r.SetTarget(list[(idx+1)%len(list)], "")
 		return &activeTrigger{}
 	case "", "pick":
-		r.picker = &picker{list: list, idx: idx}
+		if p := r.picker; p != nil && p.sticky { // second press: switch to the selection
+			r.confirmPicker()
+			return &activeTrigger{}
+		}
+		r.pickerGen++
+		r.picker = &picker{list: list, idx: idx, gen: r.pickerGen}
 		r.showPicker()
 		return &activeTrigger{release: func() {
 			p := r.picker
-			r.picker = nil
 			if p == nil {
 				return
 			}
-			r.endPicker()
-			to := p.list[p.idx]
-			if !p.moved { // a quick tap goes back to the previous machine, like Alt+Tab
-				to = r.prevOr(p.list)
-			}
-			if to == r.Target() {
+			if p.moved { // held and turned: switch now
+				r.confirmPicker()
 				return
 			}
-			r.SetTarget(to, "")
+			p.sticky = true // tapped: stay open until confirmed, another key, or the timeout
+			r.showPicker()
+			gen := p.gen
+			time.AfterFunc(pickerTimeout, func() {
+				select {
+				case r.e.in <- InputEvent{Type: evPickerTimeout, Value: int32(gen)}:
+				default:
+				}
+			})
 		}}
 	case "self":
 		r.SetTarget("", "")
@@ -159,32 +183,44 @@ func (r *Router) machineAction(what string) *activeTrigger {
 	return &activeTrigger{}
 }
 
-func (r *Router) prevOr(list []string) string {
-	r.mu.Lock()
-	prev, cur := r.prev, r.target
-	r.mu.Unlock()
-	for _, id := range list {
-		if id == prev && id != cur {
-			return id
-		}
+// confirmPicker closes the picker and switches to the selected machine.
+func (r *Router) confirmPicker() {
+	p := r.picker
+	r.picker = nil
+	if p == nil {
+		return
 	}
-	for _, id := range list { // no previous: the first other machine
-		if id != cur {
-			return id
-		}
+	r.endPicker()
+	to := p.list[p.idx]
+	if to == r.Target() {
+		overlayShow("Keydial stays on "+r.name(to), nil, -1, false)
+		return
 	}
-	return cur
+	r.SetTarget(to, "")
+}
+
+// PickerTimeout closes a picker left open (engine goroutine).
+func (r *Router) PickerTimeout(gen int) {
+	if p := r.picker; p != nil && p.sticky && p.gen == gen {
+		r.picker = nil
+		r.endPicker()
+	}
 }
 
 func (r *Router) move(d int) {
 	p := r.picker
 	n := len(p.list)
 	p.idx = ((p.idx+d)%n + n) % n
-	p.moved = true
+	if !p.sticky {
+		p.moved = true
+	}
 	r.showPicker()
 }
 
-const pickerTitle = "Keydial → turn the dial, release to switch"
+const (
+	pickerTitle       = "Keydial → turn the dial, release to switch"
+	pickerTitleSticky = "Keydial → turn the dial, press again to switch"
+)
 
 // showPicker shows the machine list here and on the machine being controlled
 // (that's the screen the person is looking at).
@@ -205,9 +241,13 @@ func (r *Router) showPicker() {
 	if len(lines) == 1 {
 		lines = append(lines, "(no other machine connected)")
 	}
-	overlayShow(pickerTitle, lines, p.idx, true)
+	title := pickerTitle
+	if p.sticky {
+		title = pickerTitleSticky
+	}
+	overlayShow(title, lines, p.idx, true)
 	if t := r.Target(); t != "" {
-		r.net.Send(t, Msg{T: "picker", On: true, IDs: ids, Names: names, Idx: p.idx})
+		r.net.Send(t, Msg{T: "picker", On: true, IDs: ids, Names: names, Idx: p.idx, Title: title})
 	}
 }
 
@@ -315,7 +355,11 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 				lines[i] += " (this machine)"
 			}
 		}
-		overlayShow(pickerTitle, lines, m.Idx, true)
+		title := pickerTitle
+		if m.Title != "" { // the host says whether it waits for a release or a press
+			title = clip(m.Title, 80)
+		}
+		overlayShow(title, lines, m.Idx, true)
 	}
 	return nil
 }

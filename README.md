@@ -45,8 +45,10 @@ presses and runs them with **their own** active layout.
    both. Keybar then offers to copy layouts; shortcuts are converted for the other
    OS where needed (Super ↔ Win gestures, workspaces ↔ virtual desktops, screenshot),
    apps are matched by name, and what can't be converted is marked ⚠.
-3. Give a key the **Machine** action: hold it, turn the dial to pick a computer,
-   release to switch (a quick tap goes back to the previous one).
+3. Give a key the **Machine** action. Press it to open the machine picker, turn the
+   dial to choose, then press it again (or the dial) to switch. Holding it, turning
+   and releasing does the same in one go. Any other key, or 10 seconds, closes the
+   picker without switching.
 
 Security: discovery beacons carry no secrets. Pairing uses the Noise protocol (XX)
 with a 6-digit comparison code; afterwards every connection uses Noise KK, so only

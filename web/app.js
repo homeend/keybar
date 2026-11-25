@@ -412,7 +412,7 @@ function actionBody(b, change) {
     }
     case "machine": {
       if (!a.machine) { b.action.machine = "pick"; save(); }
-      const opts = [["pick", "Hold, turn the dial to pick, release to switch (tap = previous)"], ["next", "Next machine"], ["self", "This machine"],
+      const opts = [["pick", "Pick with the dial: press, turn the dial, press again (or the dial) to switch — or hold, turn and release"], ["next", "Next machine"], ["self", "This machine"],
         ...((netState && netState.paired) || []).map(p => [p.id, `Switch to “${p.name}”`])];
       return [el("select", { onchange: e => change(() => (b.action.machine = e.target.value), true) },
           opts.map(([v, n]) => el("option", { value: v, selected: (a.machine || "pick") === v }, n))),
