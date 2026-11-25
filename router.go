@@ -26,6 +26,28 @@ type Router struct {
 
 	rmu    sync.Mutex
 	remote map[string]func() // "peer/slot" → release, for presses sent to us
+
+	// Where another machine's Keydial is pointed, as that machine last told us.
+	smu  sync.Mutex
+	seen *RemoteTarget
+}
+
+// RemoteTarget is shown on machines that receive from another machine's Keydial.
+type RemoteTarget struct {
+	HostID string `json:"host_id"`
+	Host   string `json:"host"`   // machine the Keydial is plugged into
+	Target string `json:"target"` // machine it controls now
+	Here   bool   `json:"here"`   // that's this machine
+}
+
+func (r *Router) Seen() *RemoteTarget {
+	r.smu.Lock()
+	defer r.smu.Unlock()
+	if r.seen == nil {
+		return nil
+	}
+	cp := *r.seen
+	return &cp
 }
 
 type picker struct {
@@ -211,11 +233,8 @@ func (r *Router) SetTarget(to, why string) error {
 	r.mu.Unlock()
 	if from != "" && r.net != nil {
 		r.net.Send(from, Msg{T: "release_all"})
-		r.net.Send(from, Msg{T: "active", On: false})
 	}
-	if to != "" {
-		r.net.Send(to, Msg{T: "active", On: true})
-	}
+	r.announce("")
 	msg := "Keydial → " + r.name(to)
 	if why != "" {
 		msg += " (" + r.name(from) + ": " + why + ")"
@@ -257,9 +276,30 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		}
 	case "release_all":
 		r.releaseFrom(peerID)
-	case "active":
-		if m.On {
-			overlayShow("Keydial → this machine", []string{"controlled from " + r.name(peerID)}, -1, false)
+	case "target":
+		if len(m.IDs) != 1 || r.net == nil {
+			break
+		}
+		here := m.IDs[0] == r.net.id.ID
+		target := clip(m.Name, 64)
+		if here {
+			target = r.net.id.Name
+		}
+		r.smu.Lock()
+		prev := r.seen
+		r.seen = &RemoteTarget{HostID: peerID, Host: r.name(peerID), Target: target, Here: here}
+		r.smu.Unlock()
+		r.bus.Publish(BusEvent{Type: "net"})
+		if prev != nil && prev.HostID == peerID && prev.Target == target && prev.Here == here {
+			break // nothing changed (e.g. reconnect)
+		}
+		switch {
+		case here:
+			overlayShow("Keydial → this machine", []string{"from " + r.name(peerID)}, -1, false)
+		case prev != nil && prev.Here:
+			overlayShow("Keydial → "+target, []string{"no longer controlling this machine"}, -1, false)
+		case prev != nil:
+			overlayShow("Keydial → "+target, []string{"Keydial on " + r.name(peerID)}, -1, false)
 		}
 	case "picker":
 		if !m.On || len(m.Names) == 0 || len(m.Names) > 32 {
@@ -300,6 +340,41 @@ func (r *Router) PeerDown(peerID string) {
 	r.releaseFrom(peerID)
 	if r.Target() == peerID {
 		r.SetTarget("", "disconnected")
+	}
+	r.smu.Lock()
+	s := r.seen
+	if s != nil && s.HostID == peerID {
+		r.seen = nil
+	}
+	r.smu.Unlock()
+	if s != nil && s.HostID == peerID && s.Here {
+		overlayShow("Keydial disconnected", []string{s.Host + " is no longer connected; this machine isn't controlled any more"}, -1, false)
+	}
+}
+
+// PeerUp tells a machine that just connected where the Keydial is pointed.
+func (r *Router) PeerUp(peerID string) { r.announce(peerID) }
+
+// announce tells connected machines (or just one) which machine the Keydial
+// controls, so each can show it. Only a machine that reads a Keydial has one.
+func (r *Router) announce(only string) {
+	if !hostSupported || r.net == nil {
+		return
+	}
+	t := r.Target()
+	id, name := t, r.name(t)
+	if t == "" {
+		id, name = r.net.id.ID, r.net.id.Name
+	}
+	m := Msg{T: "target", IDs: []string{id}, Name: name}
+	if only != "" {
+		r.net.Send(only, m)
+		return
+	}
+	for _, p := range r.net.peers.List() {
+		if r.net.Online(p.ID) {
+			r.net.Send(p.ID, m)
+		}
 	}
 }
 

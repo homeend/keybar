@@ -162,7 +162,7 @@ func (s *Server) Handler() http.Handler {
 		s.bus.Publish(BusEvent{Type: "layout", Layout: l.ID})
 		writeJSON(w, s.store.Get())
 	})
-	mux.HandleFunc("GET /api/net", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.net.State(s.router.Target())) })
+	mux.HandleFunc("GET /api/net", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.netState()) })
 	type idReq struct {
 		ID   string `json:"id"`
 		OK   bool   `json:"ok"`
@@ -179,7 +179,7 @@ func (s *Server) Handler() http.Handler {
 				httpErr(w, http.StatusConflict, err)
 				return
 			}
-			writeJSON(w, s.net.State(s.router.Target()))
+			writeJSON(w, s.netState())
 		})
 	}
 	netPost("/api/net/pair", func(v idReq) error { return s.net.Pair(v.ID) })
@@ -400,4 +400,10 @@ func assignedKeys(l Layout) int {
 		}
 	}
 	return n
+}
+
+func (s *Server) netState() NetState {
+	st := s.net.State(s.router.Target())
+	st.Remote = s.router.Seen()
+	return st
 }

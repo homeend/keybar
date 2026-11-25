@@ -610,10 +610,15 @@ function machineName(id) {
 }
 async function refreshNet() {
   try { netState = await api("GET", "/api/net"); } catch { return; }
-  const t = netState.target;
+  const t = netState.target, rm = netState.remote;
   const pill = $("#targetPill");
-  pill.textContent = "Keydial → " + (t ? machineName(t) : "this machine");
-  pill.classList.toggle("remote", !!t);
+  if (RECEIVER) { // the Keydial is on another machine: show where it points
+    pill.textContent = !rm ? "Keydial: not connected" : rm.here ? `Keydial (${rm.host}) → this machine` : `Keydial (${rm.host}) → ${rm.target}`;
+    pill.classList.toggle("remote", !!rm && !rm.here);
+  } else {
+    pill.textContent = "Keydial → " + (t ? machineName(t) : "this machine");
+    pill.classList.toggle("remote", !!t);
+  }
   if ($("#machinesDlg").open) renderMachines();
   renderPairing();
   if ($("#copyDlg").open && !copyList) loadCopyList(); // e.g. the session came up after pairing
@@ -627,10 +632,15 @@ function renderMachines() {
   const st = netState;
   if (document.activeElement !== $("#myName")) $("#myName").value = st.me.name;
   const netCall = (path, body) => api("POST", path, body).then(s => { netState = s; refreshNet(); }).catch(e => toast(e.message));
-  const me = mrow({ ...st.me, addr: "" }, st.target === "" ? el("span", { class: "tag" }, "Keydial here")
-    : el("button", { class: "btn small", onclick: () => netCall("/api/net/target", { id: "" }) }, "Control this"));
+  const rm = st.remote;
+  // A receiver can't choose the target (the Keydial isn't here); it just shows it.
+  const meTag = RECEIVER ? (rm && rm.here ? el("span", { class: "tag" }, "Controlled now") : null)
+    : st.target === "" ? el("span", { class: "tag" }, "Keydial here")
+    : el("button", { class: "btn small", onclick: () => netCall("/api/net/target", { id: "" }) }, "Control this");
+  const me = mrow({ ...st.me, addr: "" }, ...[meTag].filter(Boolean));
   $("#pairedList").replaceChildren(me, ...st.paired.map(p => mrow(p,
-    st.target === p.id ? el("span", { class: "tag" }, "Keydial here")
+    RECEIVER ? (rm && rm.host_id === p.id ? el("span", { class: "tag" }, rm.here ? "Keydial → here" : "Keydial → " + rm.target) : null)
+    : st.target === p.id ? el("span", { class: "tag" }, "Keydial here")
       : p.online ? el("button", { class: "btn small", onclick: () => netCall("/api/net/target", { id: p.id }) }, "Control") : null,
     el("button", { class: "btn small ghost", onclick: () => { if (confirm(`Unpair “${p.name}”? You'll need to pair again to use it.`)) netCall("/api/net/unpair", { id: p.id }); } }, "Unpair"))));
   $("#nearbyList").replaceChildren(...(st.nearby.length ? st.nearby.map(m => mrow(m,

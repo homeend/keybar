@@ -29,6 +29,7 @@ func (r *recEvents) PeerMsg(id string, m Msg) *Msg {
 }
 func (r *recEvents) PeerDown(id string) { r.mu.Lock(); r.down = append(r.down, id); r.mu.Unlock() }
 func (r *recEvents) Changed()           {}
+func (r *recEvents) PeerUp(id string)   {}
 
 func testNet(t *testing.T, id string, handler ...LinkEvents) (*Net, *recEvents, string) {
 	kp, _ := noise.DH25519.GenerateKeypair(rand.Reader)
@@ -169,7 +170,7 @@ func TestRouting(t *testing.T) {
 		slot(c, "k2").Trigger = "KEY_G"
 		c.Layouts[0].Keys["k2"] = Key{Label: "switch", Action: Action{Type: "machine", Machine: "next"}}
 	})
-	_, _, nb, chB, bAddr := mk("bbbb", func(c *Config) {
+	_, rb, nb, chB, bAddr := mk("bbbb", func(c *Config) {
 		c.Layouts[0].Keys["k1"] = Key{Label: "Copy", Action: Action{Type: "keys", Keys: "ctrl+c"}}
 	})
 	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
@@ -182,6 +183,7 @@ func TestRouting(t *testing.T) {
 	if ra.Target() != "bbbb" {
 		t.Fatalf("target = %q", ra.Target())
 	}
+	waitFor(t, "B told it's controlled", func() bool { s := rb.Seen(); return s != nil && s.Here && s.HostID == "aaaa" })
 	ea.handle(k(48, 1)) // B: k1, should run on B with B's layout
 	ea.handle(k(48, 0))
 	var got BusEvent

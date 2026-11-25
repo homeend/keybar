@@ -207,7 +207,8 @@ type peerConn struct {
 type LinkEvents interface {
 	PeerMsg(peerID string, m Msg) *Msg // optional reply to a request
 	PeerDown(peerID string)
-	Changed() // anything shown in the Machines view changed
+	PeerUp(peerID string) // a session just opened
+	Changed()             // anything shown in the Machines view changed
 }
 
 type Net struct {
@@ -543,6 +544,7 @@ func (n *Net) serve(peerID string, sc *secConn, addr string) {
 	}
 	sc.Send(Msg{T: "hello", Name: n.id.Name, OS: hostOS()})
 	log.Printf("network: connected to %s", addr)
+	n.ev.PeerUp(peerID)
 	n.ev.Changed()
 
 	stop := make(chan struct{})
@@ -680,6 +682,7 @@ type NetState struct {
 	Paired  []MachineInfo `json:"paired"`
 	Nearby  []MachineInfo `json:"nearby"` // seen but not paired
 	Pairing *Pairing      `json:"pairing,omitempty"`
+	Remote  *RemoteTarget `json:"remote,omitempty"` // another machine's Keydial, as it last told us
 }
 
 type MachineInfo struct {
