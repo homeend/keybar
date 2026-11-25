@@ -53,7 +53,9 @@ func setupLog() {
 	}
 	dir = filepath.Join(dir, "keybar")
 	os.MkdirAll(dir, 0o755)
-	if f, err := os.OpenFile(filepath.Join(dir, "keybar.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+	cur := filepath.Join(dir, "keybar.log")
+	os.Rename(cur, filepath.Join(dir, "keybar.prev.log")) // keep the last run's log for debugging
+	if f, err := os.OpenFile(cur, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
 		log.SetOutput(f)
 	}
 }
