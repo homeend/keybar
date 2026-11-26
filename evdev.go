@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -104,7 +106,71 @@ func (m DeviceMatch) matches(d ProcDevice) bool {
 type openDevice struct {
 	path, name string
 	file       *os.File
-	grabbed    bool
+	grabbed    bool // EVIOCGRAB: only Keybar receives its events
+	ignored    bool // udev tells the desktop to ignore it (LIBINPUT_IGNORE_DEVICE)
+	// A button was already down when the device appeared (pressing a button
+	// wakes the Keydial up), so the desktop has seen that press. Grabbing now
+	// would hide the release and leave the key stuck down and repeating; wait
+	// until every button is up, then grab. Touched by the read goroutine only.
+	waitGrab bool
+}
+
+// exclusive: the desktop doesn't see this device's events, so Keybar must
+// send anything that should reach it (factory keys, pointer movement).
+func (od *openDevice) exclusive() bool { return od.grabbed || od.ignored }
+
+func (od *openDevice) grab() bool {
+	sc, err := od.file.SyscallConn()
+	if err != nil {
+		return false
+	}
+	ok := false
+	sc.Control(func(fd uintptr) {
+		if err := ioctl(fd, eviocgrab, 1); err != nil {
+			log.Printf("grab %s: %v", od.path, err)
+		} else {
+			ok = true
+		}
+	})
+	return ok
+}
+
+// keysDown reports whether any key or button of the device is held now.
+func (od *openDevice) keysDown() bool {
+	var bits [96]byte // KEY_MAX+1 bits
+	sc, err := od.file.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var ierr error
+	sc.Control(func(fd uintptr) {
+		req := uintptr(2<<30 | len(bits)<<16 | 'E'<<8 | 0x18) // EVIOCGKEY(len)
+		ierr = ioctl(fd, req, uintptr(unsafe.Pointer(&bits[0])))
+	})
+	if ierr != nil {
+		return false
+	}
+	for _, b := range bits {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// libinputIgnores reports whether udev marked the event node so that the
+// desktop (libinput) ignores it: see install-udev.sh.
+func libinputIgnores(path string) bool {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return false
+	}
+	minor := st.Rdev&0xff | (st.Rdev>>12)&0xfff00
+	b, err := os.ReadFile(fmt.Sprintf("/run/udev/data/c%d:%d", 13, minor))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "\nE:LIBINPUT_IGNORE_DEVICE=1\n")
 }
 
 // DeviceManager finds the Keydial's event nodes, keeps them open across
@@ -116,9 +182,10 @@ type DeviceManager struct {
 	onChange func()
 	onClose  func() // a device closed: release anything held
 
-	mu    sync.Mutex
-	open  map[string]*openDevice
-	pause bool
+	mu     sync.Mutex
+	open   map[string]*openDevice
+	pause  bool
+	scanMu sync.Mutex // one scan at a time (timer, /dev/input watcher, Reset)
 }
 
 func NewDeviceManager(store *ConfigStore, em *Emitter, out chan<- InputEvent, onChange func()) *DeviceManager {
@@ -126,6 +193,7 @@ func NewDeviceManager(store *ConfigStore, em *Emitter, out chan<- InputEvent, on
 }
 
 func (m *DeviceManager) Run() {
+	go m.watch()
 	for {
 		m.scan()
 		time.Sleep(2 * time.Second)
@@ -153,7 +221,39 @@ func (m *DeviceManager) SetPaused(p bool) {
 
 func (m *DeviceManager) Paused() bool { return m.paused() }
 
+// watch rescans as soon as /dev/input changes (a node appears, or udev sets
+// its permissions), so a reconnected Keydial is taken over within
+// milliseconds instead of at the next 2-second scan.
+func (m *DeviceManager) watch() {
+	fd, err := syscall.InotifyInit1(syscall.IN_CLOEXEC)
+	if err != nil {
+		log.Printf("watch /dev/input: %v", err)
+		return
+	}
+	if _, err := syscall.InotifyAddWatch(fd, "/dev/input", syscall.IN_CREATE|syscall.IN_ATTRIB); err != nil {
+		log.Printf("watch /dev/input: %v", err)
+		syscall.Close(fd)
+		return
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, err := syscall.Read(fd, buf)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			log.Printf("watch /dev/input: %v", err)
+			return
+		}
+		if n > 0 {
+			m.scan()
+		}
+	}
+}
+
 func (m *DeviceManager) scan() {
+	m.scanMu.Lock()
+	defer m.scanMu.Unlock()
 	match := m.store.Get().Device
 	grab := m.shouldGrab()
 	changed := false
@@ -173,22 +273,21 @@ func (m *DeviceManager) scan() {
 				log.Printf("open %s (%s): %v", path, d.Name, err)
 				continue
 			}
-			od := &openDevice{path: path, name: d.Name, file: f}
+			od := &openDevice{path: path, name: d.Name, file: f, ignored: libinputIgnores(path)}
 			if grab {
-				if sc, err := f.SyscallConn(); err == nil {
-					sc.Control(func(fd uintptr) {
-						if err := ioctl(fd, eviocgrab, 1); err != nil {
-							log.Printf("grab %s: %v", path, err)
-						} else {
-							od.grabbed = true
-						}
-					})
+				if !od.ignored && od.keysDown() {
+					od.waitGrab = true
+				} else {
+					od.grabbed = od.grab()
 				}
 			}
 			m.mu.Lock()
 			m.open[path] = od
 			m.mu.Unlock()
-			log.Printf("opened %s %q grabbed=%v", path, d.Name, od.grabbed)
+			log.Printf("opened %s %q grabbed=%v desktop-ignores=%v", path, d.Name, od.grabbed, od.ignored)
+			if od.waitGrab {
+				log.Printf("%s: a button is held (it woke the Keydial up); taking it over once released", path)
+			}
 			changed = true
 			go m.read(od)
 		}
@@ -205,6 +304,7 @@ func (m *DeviceManager) read(od *openDevice) {
 		if err != nil {
 			break
 		}
+		paused := m.paused()
 		for off := 0; off+eventSize <= n; off += eventSize {
 			b := buf[off : off+eventSize]
 			ev := InputEvent{
@@ -212,8 +312,31 @@ func (m *DeviceManager) read(od *openDevice) {
 				Code:  binary.LittleEndian.Uint16(b[18:]),
 				Value: int32(binary.LittleEndian.Uint32(b[20:])),
 			}
-			if ev.Type == evKey || ev.Type == evRel {
+			if ev.Type != evKey && ev.Type != evRel {
+				continue
+			}
+			switch {
+			case paused:
+				// Mappings are off. If the desktop ignores the device, hand it
+				// the factory keys ourselves; otherwise it already has them.
+				if od.ignored {
+					m.forward(ev)
+				}
+			case od.waitGrab:
+				// The desktop gets these until the held button is released.
+			default:
 				m.out <- ev
+			}
+		}
+		if od.waitGrab && !od.keysDown() {
+			od.waitGrab = false
+			ok := od.grab()
+			m.mu.Lock()
+			od.grabbed = ok
+			m.mu.Unlock()
+			log.Printf("%s: buttons released, grabbed=%v", od.path, ok)
+			if m.onChange != nil {
+				m.onChange()
 			}
 		}
 	}
@@ -232,6 +355,18 @@ func (m *DeviceManager) read(od *openDevice) {
 	}
 }
 
+// forward passes a raw event on unchanged (used while paused).
+func (m *DeviceManager) forward(ev InputEvent) {
+	switch ev.Type {
+	case evKey:
+		if ev.Value != 2 { // the desktop repeats held keys itself
+			m.emitter.Key(ev.Code, ev.Value == 1)
+		}
+	case evRel:
+		m.emitter.Rel(ev.Code, ev.Value)
+	}
+}
+
 // Reset closes all devices; the next scan reopens them with current settings.
 func (m *DeviceManager) Reset() {
 	m.mu.Lock()
@@ -247,7 +382,7 @@ func (m *DeviceManager) Devices() []DeviceInfo {
 	defer m.mu.Unlock()
 	out := []DeviceInfo{}
 	for _, od := range m.open {
-		out = append(out, DeviceInfo{Path: od.path, Name: od.name, Grabbed: od.grabbed})
+		out = append(out, DeviceInfo{Path: od.path, Name: od.name, Grabbed: od.exclusive()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
@@ -257,7 +392,7 @@ func (m *DeviceManager) AnyGrabbed() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, od := range m.open {
-		if od.grabbed {
+		if od.exclusive() {
 			return true
 		}
 	}
