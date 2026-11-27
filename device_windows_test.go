@@ -102,6 +102,19 @@ func TestKeydialCombination(t *testing.T) {
 	}
 }
 
+func TestBluetoothAddress(t *testing.T) {
+	for name, want := range map[string]string{
+		`\\?\hid#{00001812-0000-1000-8000-00805f9b34fb}_dev_vid&02256c_pid&8251_rev&0001_202503116dde#b&8686a42&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}`: "202503116dde",
+		`\\?\HID#VID_256C&PID_8251&MI_01#7&1234#{4d1e55b2-f16f-11cf-88cb-001111000030}`:                                                                        "",
+		"": "",
+	} {
+		if got := bluetoothAddress(name); got != want {
+			t.Errorf("%s: %q, want %q", name, got, want)
+		}
+	}
+	t.Logf("battery of 20:25:03:11:6D:DE on this machine: %d", bleBattery("202503116dde"))
+}
+
 func TestIsKeydialName(t *testing.T) {
 	match := DeviceMatch{Vendor: "256c", Product: "8251"}
 	for name, want := range map[string]bool{

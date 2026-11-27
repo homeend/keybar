@@ -279,6 +279,20 @@ func (m *DeviceManager) AnyGrabbed() bool {
 	return false
 }
 
+// Address: the connected Keydial's Bluetooth address ("20:25:03:11:6D:DE"),
+// "" if it isn't connected over Bluetooth.
+func (m *DeviceManager) Address() string {
+	if !m.Connected() {
+		return ""
+	}
+	for _, d := range listInputDevices() {
+		if m.store.Get().Device.matches(d) && len(d.Uniq) == 17 {
+			return strings.ToUpper(d.Uniq)
+		}
+	}
+	return ""
+}
+
 // batteryPercent asks BlueZ for the device's battery level (BLE battery service).
 func batteryPercent(match DeviceMatch) int {
 	for _, d := range listInputDevices() {

@@ -828,6 +828,15 @@ function openSettings() {
   $("#settingsDlg").showModal();
 }
 $("#settingsBtn").onclick = openSettings;
+$("#setKeydial").onclick = async () => {
+  const b = $("#setKeydial"), st = $("#setKeydialState");
+  b.disabled = true; st.textContent = "Writing to the Keydial… (up to 30 s)";
+  try {
+    await api("POST", "/api/keydial/setup");
+    st.textContent = "Done. Now use Learn all buttons.";
+  } catch (e) { st.textContent = e.message; }
+  b.disabled = false;
+};
 $("#setClose").onclick = () => $("#settingsDlg").close();
 $("#setSave").onclick = async () => {
   cfg.grab = $("#setGrab").checked;

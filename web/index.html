@@ -68,6 +68,9 @@
     <label>USB product <input id="setProduct" placeholder="8251"></label>
   </div>
   <label>Device name contains <input id="setName" placeholder="(optional)"></label>
+  <div class="label">Keydial buttons</div>
+  <p class="muted small">For Windows, the Keydial must send key combinations that no keyboard sends: buttons 1–12 Ctrl+Alt+Shift+F1…F12, 13–18 and the dial press Ctrl+Alt+Win+F1…F7. This writes them to the Keydial over Bluetooth (Linux works with them too). Then use <b>Learn all buttons</b>. Huion's Keydial app can change them back.</p>
+  <div class="row"><button class="btn" id="setKeydial">Set up the Keydial for Keybar</button><span class="muted small" id="setKeydialState"></span></div>
   <p class="muted small" id="setInfo"></p>
   <div class="row end">
     <button class="btn ghost" id="setClose">Close</button>

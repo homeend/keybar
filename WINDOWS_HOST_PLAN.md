@@ -12,8 +12,13 @@ have it for a moment, the one it leaves last stays the host; if neither has it,
 the higher machine ID stays. No machine is the host after a start until the
 Keydial connects. The panel reloads when the host changes, and the Learn dialog
 shows a small Keydial with the button to press.
-Still open: Windows battery level; a "Set up Keydial" button in the panel instead
-of `keydialcfg`; holding a button (the Keydial repeats the combo).
+Also done: the Windows battery level comes from the Bluetooth LE device node's
+property `{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2` (`battery_windows.go`); Settings
+has **Set up the Keydial for Keybar**, which writes the mapping over BLE
+(`keydial_setup.go`, Windows and Linux); a Keydial combination's modifiers are
+released in Windows as soon as it is recognized, so actions get plain keys.
+Holding a button is a real hold: one press, the OS key repeat (only downs, every
+~30 ms after 500 ms) and one release, recorded with `keydialprobe watch`.
 The sections below are the original plan and findings.
 
 ## Where things stand
@@ -87,7 +92,8 @@ other apps. On Linux, `EVIOCGRAB` does both.
     Ctrl+Alt+Shift+F<n> (plus a second modifier set if there are more than 12),
     block those F-keys in `WH_KEYBOARD_LL` when the three modifiers are down, let the
     lone modifiers through and send a mask key (as AutoHotkey's vkE8) so Alt doesn't
-    open menus. To check: a held button seems to repeat the whole combination.
+    open menus. Checked: a held button doesn't repeat the combination, only the OS
+    key repeat (downs) until one release.
   - **Huion's configuration protocol** (from the Huion Keydial app 3.0.4, decompiled):
     one GATT characteristic, `FFE2` in service `FFE0`: commands are written to it,
     replies come as notifications on it (the app requests the max MTU first).

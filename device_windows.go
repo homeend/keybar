@@ -556,8 +556,6 @@ func (m *DeviceManager) Connected() bool {
 	return m.present != ""
 }
 
-func batteryPercent(DeviceMatch) int { return -1 }
-
 // captureShortcut: the panel records shortcuts in the browser on Windows.
 func captureShortcut(ctx context.Context, skip DeviceMatch) string { return "" }
 

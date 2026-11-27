@@ -6,8 +6,10 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -315,6 +317,20 @@ func (s *Server) Handler() http.Handler {
 			s.engine.CancelLearning()
 		}
 		writeJSON(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/keydial/setup", func(w http.ResponseWriter, r *http.Request) {
+		addr := s.dm.Address()
+		if addr == "" {
+			httpErr(w, http.StatusConflict, errors.New("the Keydial isn't connected to this computer over Bluetooth"))
+			return
+		}
+		log.Printf("keydial: writing Keybar's mapping to %s", addr)
+		if err := setupKeydial(addr); err != nil {
+			log.Printf("keydial: setup: %v", err)
+			httpErr(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, map[string]string{"address": addr})
 	})
 	mux.HandleFunc("POST /api/test", func(w http.ResponseWriter, r *http.Request) {
 		var a Action
