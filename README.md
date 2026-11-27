@@ -13,13 +13,21 @@ a tray icon, a daemon that reads the device, and a control panel at
 - With **take over** on (default) the device is grabbed (`EVIOCGRAB`) so its factory
   keys don't leak; unassigned buttons are re-sent unchanged. Keys and clicks are
   sent through two virtual uinput devices.
-- Reconnects (Bluetooth sleep) are picked up automatically every 2 s.
+- Reconnects (Bluetooth sleep) are picked up as soon as the device appears. If the
+  button that woke the Keydial is still held then, Keybar waits for its release
+  before taking the device over, so the desktop never sees a key stuck down.
 
 ## Setup
 ```bash
-sudo ./install-udev.sh   # once: lets the input group use /dev/uinput
+sudo ./install-udev.sh   # once: lets the input group use /dev/uinput, and makes
+                         # the desktop ignore the Keydial (Keybar reads it instead)
 make install             # build, install to ~/.local/bin, enable systemd user service
 ```
+With the udev rule the desktop never receives the Keydial's own keys, so a press
+can't leak before Keybar takes over. The flip side: without Keybar running the
+Keydial does nothing. **Pause mappings** (tray) makes Keybar pass the factory keys
+through unchanged. To undo, delete `/etc/udev/rules.d/70-keybar-keydial.rules`.
+
 Open the panel from the app grid ("Keybar"), the tray icon, or `keybar open`.
 
 ## Using the panel
