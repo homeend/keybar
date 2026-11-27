@@ -175,6 +175,8 @@ func TestRouting(t *testing.T) {
 	_, rb, nb, chB, bAddr := mk("bbbb", func(c *Config) {
 		c.Layouts[0].Keys["k1"] = Key{Label: "Copy", Action: Action{Type: "keys", Keys: "ctrl+c"}}
 	})
+	ra.host.Store(true) // A has the Keydial (on any OS), B receives
+	rb.host.Store(false)
 	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
 	nb.peers.Put(Peer{ID: "aaaa", Name: "A", Public: na.id.Public})
 	go na.connect(*na.peers.Get("bbbb"), bAddr)
@@ -350,7 +352,8 @@ func TestLinksAndRemoteLearn(t *testing.T) {
 	}
 	sa, ea, ra, _ := mk(map[string]string{"k2": "KEY_G"})
 	sb, _, rb, busB := mk(map[string]string{"k5": "KEY_STALE"})
-	ra.host, rb.host = true, false
+	ra.host.Store(true)
+	rb.host.Store(false)
 	evB, stop := busB.Subscribe()
 	defer stop()
 
@@ -368,7 +371,7 @@ func TestLinksAndRemoteLearn(t *testing.T) {
 		return l["k2"] == "KEY_G" && l["k5"] == ""
 	})
 	// B's panel can't change links by saving its config.
-	if rb.host {
+	if rb.IsHost() {
 		t.Fatal("B must be a receiver")
 	}
 

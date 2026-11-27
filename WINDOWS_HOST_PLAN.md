@@ -1,7 +1,15 @@
 # Plan: let Windows read the Keydial (Windows as host)
 
-Status: plan only, nothing implemented yet. Written so the work can be picked up on
-the Windows machine.
+Status (2026-11-27): **Windows reads the Keydial** (`device_windows.go`): buttons
+via a low-level keyboard hook that blocks the Keydial's Ctrl+Alt+Shift/Win+F-key
+combinations (the Keydial is remapped with `tools/keydialcfg`), the dial via the
+wheel hook + Raw Input. On Windows the host flag follows whether the Keydial is
+connected (`Router.SetHost`); the panel reloads when it changes, and the Learn
+dialog shows a small Keydial with the button to press.
+Still open: Linux is always the host, even when the Keydial is on Windows (both
+announce themselves); Windows battery level; a "Set up Keydial" button in the
+panel instead of `keydialcfg`; holding a button (the Keydial repeats the combo).
+The sections below are the original plan and findings.
 
 ## Where things stand
 

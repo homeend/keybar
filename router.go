@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,8 +38,9 @@ type Router struct {
 	seen *RemoteTarget
 
 	// host: this machine reads the Keydial, so it owns which button is linked
-	// to which slot and tells the others.
-	host      bool
+	// to which slot and tells the others. Fixed on Linux; on Windows it follows
+	// whether the Keydial is connected (SetHost).
+	host      atomic.Bool
 	lmu       sync.Mutex
 	sentLinks string       // links last sent to every machine (JSON)
 	learnFor  *remoteLearn // another machine's panel is linking a slot
@@ -82,8 +84,32 @@ type picker struct {
 const pickerTimeout = 10 * time.Second
 
 func NewRouter(e *Engine, n *Net, bus *Bus) *Router {
-	host := hostSupported && os.Getenv("KEYBAR_FAKE_OS") == ""
-	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}, host: host}
+	r := &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
+	r.host.Store(hostSupported && os.Getenv("KEYBAR_FAKE_OS") == "")
+	return r
+}
+
+// IsHost: this machine reads the Keydial now.
+func (r *Router) IsHost() bool { return r.host.Load() }
+
+// SetHost records that the Keydial was connected to (or left) this machine.
+// A new host tells the others where the Keydial points and sends its links.
+func (r *Router) SetHost(on bool) {
+	if os.Getenv("KEYBAR_FAKE_OS") != "" {
+		on = false // a test copy never reads the device
+	}
+	if r.host.Swap(on) == on {
+		return
+	}
+	log.Printf("this machine %s the Keydial", map[bool]string{true: "now has", false: "no longer has"}[on])
+	if on {
+		r.lmu.Lock()
+		r.sentLinks = ""
+		r.lmu.Unlock()
+		r.announce("", false)
+		r.shareLinks("")
+	}
+	r.bus.Publish(BusEvent{Type: "status"})
 }
 
 func (r *Router) Target() string {
@@ -343,7 +369,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 	case "release_all":
 		r.releaseFrom(peerID)
 	case "links":
-		if r.host || m.Links == nil {
+		if r.IsHost() || m.Links == nil {
 			break // this machine has its own Keydial links
 		}
 		changed, err := r.e.store.SetLinks(m.Links)
@@ -354,7 +380,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 			r.bus.Publish(BusEvent{Type: "config"})
 		}
 	case "learn":
-		if !r.host {
+		if !r.IsHost() {
 			break
 		}
 		r.lmu.Lock()
@@ -370,7 +396,7 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 			r.e.CancelLearning()
 		}
 	case "learned":
-		if !r.host {
+		if !r.IsHost() {
 			r.bus.Publish(BusEvent{Type: "learned", Trigger: m.Trigger, Binding: m.Slot})
 		}
 	case "target":
@@ -469,7 +495,7 @@ func (r *Router) PeerUp(peerID string) {
 // controls, so each can show it. Only a machine that reads a Keydial has one.
 // show asks them to display it even if it didn't change ("stays on").
 func (r *Router) announce(only string, show bool) {
-	if !r.host || r.net == nil {
+	if !r.IsHost() || r.net == nil {
 		return
 	}
 	t := r.Target()
@@ -491,7 +517,7 @@ func (r *Router) announce(only string, show bool) {
 // them if they changed since last sent. Only the machine holding the Keydial
 // has links worth sharing; the others show and enforce them in their panels.
 func (r *Router) shareLinks(only string) {
-	if !r.host || r.net == nil {
+	if !r.IsHost() || r.net == nil {
 		return
 	}
 	links := r.e.store.Get().Links()

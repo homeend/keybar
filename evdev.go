@@ -114,7 +114,8 @@ type DeviceManager struct {
 	emitter  *Emitter
 	out      chan<- InputEvent
 	onChange func()
-	onClose  func() // a device closed: release anything held
+	onClose  func()     // a device closed: release anything held
+	onHost   func(bool) // not used on Linux: it is always the host
 
 	mu    sync.Mutex
 	open  map[string]*openDevice

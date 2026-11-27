@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -99,12 +98,14 @@ type Status struct {
 	Battery    int          `json:"battery"`
 	ConfigPath string       `json:"config_path"`
 	Panels     int          `json:"panels"` // connected control-panel pages
+	Host       bool         `json:"host"`   // this machine reads the Keydial now
 }
 
 func (s *Server) status() Status {
 	return Status{
 		Version: version, Devices: s.dm.Devices(), Uinput: s.em.Ready(), UinputErr: s.em.Err(),
 		Grabbed: s.dm.AnyGrabbed(), Paused: s.dm.Paused(), Battery: s.battery(), ConfigPath: s.store.Path(), Panels: s.bus.Count(),
+		Host: s.router.IsHost(),
 	}
 }
 
@@ -129,7 +130,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		page := strings.Replace(string(b), "__TOKEN__", s.token, 1)
 		page = strings.Replace(page, "__OS__", hostOS(), 1)
-		page = strings.Replace(page, "__HOST__", fmt.Sprint(hostSupported && os.Getenv("KEYBAR_FAKE_OS") == ""), 1)
+		page = strings.Replace(page, "__HOST__", fmt.Sprint(s.router.IsHost()), 1)
 		w.Write([]byte(page))
 	})
 	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
@@ -142,7 +143,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		old := s.store.Get()
-		if !s.router.host {
+		if !s.router.IsHost() {
 			// Button links belong to the machine holding the Keydial; this
 			// panel's copy may be older than the last update from there.
 			links := old.Links()
@@ -302,7 +303,7 @@ func (s *Server) Handler() http.Handler {
 			Slot  string
 		}
 		json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&v)
-		if !s.router.host {
+		if !s.router.IsHost() {
 			// The Keydial is on another machine: it listens for the press.
 			if err := s.router.RemoteLearn(v.Slot, v.Start); err != nil && v.Start {
 				httpErr(w, http.StatusConflict, err)
