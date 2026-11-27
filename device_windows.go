@@ -19,7 +19,7 @@ import (
 // Keydial's keyboard and mouse, so Keybar can't open them; instead:
 //
 //   - Buttons: the Keydial is set up (keydialcfg keybar) so every button sends
-//     Ctrl+Alt+Shift+F1…F12 or Ctrl+Alt+Win+F1…F7, keys no real keyboard sends.
+//     Ctrl+Alt+Shift+F1â€¦F12 or Ctrl+Alt+Win+F1â€¦F7, keys no real keyboard sends.
 //     A low-level keyboard hook blocks the F-key of such a combination and gives
 //     the engine the same events Linux would. The modifiers reach apps; the ones
 //     released after a blocked key are held back and re-sent behind a mask key,
@@ -94,7 +94,7 @@ const (
 	codeMeta  = 125 // KEY_LEFTMETA
 )
 
-// fkeyLinux maps the F1–F12 virtual keys back to Linux codes (the inverse of vkOf).
+// fkeyLinux maps the F1â€“F12 virtual keys back to Linux codes (the inverse of vkOf).
 var fkeyLinux = func() map[uint32]uint16 {
 	m := map[uint32]uint16{}
 	for code, v := range vkOf {
@@ -126,22 +126,21 @@ type DeviceManager struct {
 	active  atomic.Bool // hooks installed: Keydial input is read and blocked
 
 	// hook thread only
-	hwnd      uintptr
-	kbHook    uintptr
-	msHook    uintptr
-	mods      map[uint32]bool     // hardware modifiers down, by virtual key
-	blocked   map[uint32][]uint16 // F-keys blocked on down → the Linux modifiers sent with it
-	maskNext  bool                // a key was blocked: modifier releases go behind a mask key
-	releasing bool                // re-sending modifier releases behind that mask, in order
-	held      []wheelStep         // wheel steps waiting for their device
-	early     []wheelStep         // Raw Input steps that came before their hook event
-	names     map[uintptr]string
-	lastScan  time.Time
+	hwnd     uintptr
+	kbHook   uintptr
+	msHook   uintptr
+	mods     map[uint32]bool     // hardware modifiers down, by virtual key
+	blocked  map[uint32][]uint16 // F-keys blocked on down â†’ the Linux modifiers sent with it
+	lifted   map[uint32]bool     // Keydial modifiers released early in Windows; their real release is swallowed
+	held     []wheelStep         // wheel steps waiting for their device
+	early    []wheelStep         // Raw Input steps that came before their hook event
+	names    map[uintptr]string
+	lastScan time.Time
 }
 
 func NewDeviceManager(store *ConfigStore, em *Emitter, out chan<- InputEvent, onChange func()) *DeviceManager {
 	return &DeviceManager{store: store, emitter: em, out: out, onChange: onChange,
-		mods: map[uint32]bool{}, blocked: map[uint32][]uint16{}, names: map[uintptr]string{}}
+		mods: map[uint32]bool{}, blocked: map[uint32][]uint16{}, lifted: map[uint32]bool{}, names: map[uintptr]string{}}
 }
 
 // Run owns the hook thread: a message-only window for Raw Input, the hooks
@@ -219,7 +218,7 @@ func (m *DeviceManager) scan() {
 
 // isKeydialName: a Raw Input device name (any of the Keydial's collections)
 // matches the configured vendor and product.
-// Bluetooth: …vid&02256c_pid&8251…, USB: …vid_256c&pid_8251…
+// Bluetooth: â€¦vid&02256c_pid&8251â€¦, USB: â€¦vid_256c&pid_8251â€¦
 func isKeydialName(match DeviceMatch, name string) bool {
 	vendor := strings.ToLower(strings.TrimLeft(match.Vendor, "0"))
 	product := strings.ToLower(strings.TrimLeft(match.Product, "0"))
@@ -289,8 +288,8 @@ func (m *DeviceManager) apply() {
 		for _, s := range m.held { // never keep a real wheel step
 			m.replayWheel(s)
 		}
-		m.held, m.early, m.maskNext = nil, nil, false
-		m.blocked = map[uint32][]uint16{}
+		m.held, m.early = nil, nil
+		m.blocked, m.lifted = map[uint32][]uint16{}, map[uint32]bool{}
 	}
 	m.active.Store(m.kbHook != 0)
 	log.Printf("keydial: reading %v", m.kbHook != 0)
@@ -311,15 +310,6 @@ func isModifierVK(vk uint32) bool {
 	switch vk {
 	case 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C:
 		return true
-	}
-	return false
-}
-
-func (m *DeviceManager) anyMods() bool {
-	for _, down := range m.mods {
-		if down {
-			return true
-		}
 	}
 	return false
 }
@@ -347,36 +337,18 @@ func (m *DeviceManager) keyboard(k *kbdLLHook) bool {
 	up := k.flags&llkhfUp != 0
 	if isModifierVK(k.vk) {
 		m.mods[k.vk] = !up
-		if !up {
-			m.releasing = false
-			return false
-		}
-		swallow := false
-		switch {
-		case m.maskNext:
-			// After a blocked key: a mask key first, then this release, so the
-			// shell doesn't take it as a lone modifier tap. Injected input goes
-			// to the end of the input queue, so the release is re-sent with it.
-			m.maskNext, m.releasing, swallow = false, true, true
-			resend := []keyboardInput{
-				{typ: inputKeyboard, vk: vkMask, extra: keybarMark},
-				{typ: inputKeyboard, vk: vkMask, flags: keyeventfKeyUp, extra: keybarMark},
-				m.release(k),
+		if m.lifted[k.vk] {
+			// Already released in Windows: swallow the Keydial's repeats and
+			// its real release.
+			if up {
+				delete(m.lifted, k.vk)
 			}
-			procSendInput.Call(uintptr(len(resend)), uintptr(unsafe.Pointer(&resend[0])), unsafe.Sizeof(resend[0]))
-		case m.releasing:
-			swallow = true // the next releases follow behind the mask, in order
-			in := m.release(k)
-			procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+			return true
 		}
-		if !m.anyMods() {
-			m.releasing = false
-		}
-		return swallow
+		return false
 	}
 	code, isF := fkeyLinux[k.vk]
 	if !up {
-		m.releasing = false
 		if !isF {
 			return false
 		}
@@ -384,6 +356,7 @@ func (m *DeviceManager) keyboard(k *kbdLLHook) bool {
 		if mods == nil {
 			return false
 		}
+		m.lift()
 		if _, again := m.blocked[k.vk]; !again {
 			for _, c := range mods {
 				m.send(InputEvent{Type: evKey, Code: c, Value: 1})
@@ -391,7 +364,6 @@ func (m *DeviceManager) keyboard(k *kbdLLHook) bool {
 			m.send(InputEvent{Type: evKey, Code: code, Value: 1})
 		}
 		m.blocked[k.vk] = mods
-		m.maskNext = true
 		return true
 	}
 	mods, ok := m.blocked[k.vk]
@@ -406,13 +378,36 @@ func (m *DeviceManager) keyboard(k *kbdLLHook) bool {
 	return true
 }
 
-// release builds the injected copy of a hardware modifier release.
-func (m *DeviceManager) release(k *kbdLLHook) keyboardInput {
-	in := keyboardInput{typ: inputKeyboard, vk: uint16(k.vk), scan: uint16(k.scan), flags: keyeventfKeyUp, extra: keybarMark}
-	if k.flags&llkhfExtended != 0 {
-		in.flags |= keyeventfExtended
+// lift releases, in Windows, the modifiers of a Keydial combination that was
+// just recognized, so the action's own keys arrive without them (Enter, not
+// Ctrl+Shift+Alt+Enter). A mask key goes first, so the shell doesn't take the
+// releases as a lone Win or Alt tap. The real releases are swallowed later.
+func (m *DeviceManager) lift() {
+	in := []keyboardInput{
+		{typ: inputKeyboard, vk: vkMask, extra: keybarMark},
+		{typ: inputKeyboard, vk: vkMask, flags: keyeventfKeyUp, extra: keybarMark},
 	}
-	return in
+	for vk, down := range m.mods {
+		if !down || m.lifted[vk] {
+			continue
+		}
+		m.lifted[vk] = true
+		scan, _, _ := procMapVirtual.Call(uintptr(vk), 0)
+		r := keyboardInput{typ: inputKeyboard, vk: uint16(vk), scan: uint16(scan), flags: keyeventfKeyUp, extra: keybarMark}
+		switch vk {
+		case 0xA3, 0xA5, 0x5B, 0x5C: // right Ctrl, right Alt, Win: extended keys
+			r.flags |= keyeventfExtended
+		}
+		in = append(in, r)
+	}
+	if len(in) > 2 {
+		sendKeys(in)
+	}
+}
+
+// sendKeys injects keyboard input (a variable so tests don't type into the desktop).
+var sendKeys = func(in []keyboardInput) {
+	procSendInput.Call(uintptr(len(in)), uintptr(unsafe.Pointer(&in[0])), unsafe.Sizeof(in[0]))
 }
 
 func keyboardHookProc(code, wParam, lParam uintptr) uintptr {

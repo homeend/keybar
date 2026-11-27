@@ -5,12 +5,15 @@ package main
 import "testing"
 
 // The hook turns a Keydial combination into the events Linux would send, and
-// leaves everything else alone. (Modifier releases after a blocked key are
-// re-sent with SendInput, so they aren't exercised here.)
+// leaves everything else alone. The combination's modifiers are released in
+// Windows at once (behind a mask key), and their real releases are swallowed.
 func TestKeydialCombination(t *testing.T) {
 	if fkeyLinux[0x70] != 59 || fkeyLinux[0x79] != 68 || fkeyLinux[0x7A] != 87 || fkeyLinux[0x7B] != 88 || len(fkeyLinux) != 12 {
 		t.Fatalf("F-key map: %v", fkeyLinux)
 	}
+	var sent []keyboardInput
+	defer func(f func([]keyboardInput)) { sendKeys = f }(sendKeys)
+	sendKeys = func(in []keyboardInput) { sent = append(sent, in...) }
 	out := make(chan InputEvent, 16)
 	m := NewDeviceManager(nil, nil, out, nil)
 	key := func(vk uint32, up bool, injected bool) bool {
@@ -44,11 +47,20 @@ func TestKeydialCombination(t *testing.T) {
 	if got := drain(); len(got) != len(want) || got[0] != want[0] || got[3] != want[3] {
 		t.Fatalf("down events %v, want %v", got, want)
 	}
-	if !m.maskNext {
-		t.Fatal("modifier releases must go behind a mask key")
+	if len(sent) != 5 || sent[0].vk != vkMask || sent[2].flags&keyeventfKeyUp == 0 {
+		t.Fatalf("lifted modifiers: %+v", sent)
 	}
-	m.maskNext = false         // skip the SendInput path for the releases
-	m.mods = map[uint32]bool{} // the Keydial releases its modifiers first
+	if !key(0xA2, false, false) {
+		t.Fatal("a repeated Ctrl down of the Keydial must be swallowed")
+	}
+	for _, vk := range []uint32{0xA2, 0xA0, 0xA4} { // the Keydial releases its modifiers first
+		if !key(vk, true, false) {
+			t.Fatalf("real release of %#x not swallowed", vk)
+		}
+	}
+	if key(0xA2, false, false) || key(0xA2, true, false) {
+		t.Fatal("Ctrl after the combination must pass again")
+	}
 	if !key(0x70, true, false) {
 		t.Fatal("F1 release not blocked")
 	}
