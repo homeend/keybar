@@ -47,6 +47,9 @@ type Router struct {
 	sentLinks string       // links last sent to every machine (JSON)
 	learnFor  *remoteLearn // another machine's panel is linking a slot
 	rival     string       // a machine that said it has the Keydial while it was still here
+
+	bmu     sync.Mutex
+	battery int // the Keydial's battery level read here (host), -1 = unknown
 }
 
 type remoteLearn struct {
@@ -56,10 +59,11 @@ type remoteLearn struct {
 
 // RemoteTarget is shown on machines that receive from another machine's Keydial.
 type RemoteTarget struct {
-	HostID string `json:"host_id"`
-	Host   string `json:"host"`   // machine the Keydial is plugged into
-	Target string `json:"target"` // machine it controls now
-	Here   bool   `json:"here"`   // that's this machine
+	HostID  string `json:"host_id"`
+	Host    string `json:"host"`    // machine the Keydial is plugged into
+	Target  string `json:"target"`  // machine it controls now
+	Here    bool   `json:"here"`    // that's this machine
+	Battery int    `json:"battery"` // the Keydial's battery level, -1 = unknown
 }
 
 func (r *Router) Seen() *RemoteTarget {
@@ -87,7 +91,41 @@ type picker struct {
 const pickerTimeout = 10 * time.Second
 
 func NewRouter(e *Engine, n *Net, bus *Bus) *Router {
-	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
+	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}, battery: -1}
+}
+
+func (r *Router) localBattery() int {
+	r.bmu.Lock()
+	defer r.bmu.Unlock()
+	return r.battery
+}
+
+// SetBattery records the battery level read on this machine; the host sends
+// a change to the others, so every panel can show it.
+func (r *Router) SetBattery(v int) {
+	r.bmu.Lock()
+	same := r.battery == v
+	r.battery = v
+	r.bmu.Unlock()
+	if same {
+		return
+	}
+	if r.IsHost() {
+		r.broadcast(Msg{T: "battery", Battery: &v})
+	}
+	r.bus.Publish(BusEvent{Type: "status"})
+}
+
+// Battery: the Keydial's battery level as this machine knows it: read here
+// on the host, or as the host last said. -1 = unknown.
+func (r *Router) Battery() int {
+	if r.IsHost() {
+		return r.localBattery()
+	}
+	if s := r.Seen(); s != nil {
+		return s.Battery
+	}
+	return -1
 }
 
 // IsHost: this machine reads the Keydial now.
@@ -473,9 +511,13 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		if here {
 			target = r.net.id.Name
 		}
+		battery := -1
+		if m.Battery != nil {
+			battery = *m.Battery
+		}
 		r.smu.Lock()
 		prev := r.seen
-		r.seen = &RemoteTarget{HostID: peerID, Host: r.name(peerID), Target: target, Here: here}
+		r.seen = &RemoteTarget{HostID: peerID, Host: r.name(peerID), Target: target, Here: here, Battery: battery}
 		r.smu.Unlock()
 		r.bus.Publish(BusEvent{Type: "net"})
 		same := prev != nil && prev.HostID == peerID && prev.Target == target && prev.Here == here
@@ -492,6 +534,19 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 			overlayShow("Keydial → "+target, []string{"no longer controlling this machine"}, -1, false)
 		case prev != nil:
 			overlayShow("Keydial → "+target, nil, -1, false)
+		}
+	case "battery":
+		if m.Battery == nil {
+			break
+		}
+		r.smu.Lock()
+		ok := r.seen != nil && r.seen.HostID == peerID
+		if ok {
+			r.seen.Battery = *m.Battery
+		}
+		r.smu.Unlock()
+		if ok {
+			r.bus.Publish(BusEvent{Type: "status"})
 		}
 	case "picker":
 		log.Printf("from %s: picker on=%v idx=%d %v", r.name(peerID), m.On, m.Idx, m.Names)
@@ -567,7 +622,8 @@ func (r *Router) announce(only string, show bool) {
 	if t == "" {
 		id, name = r.net.id.ID, r.net.id.Name
 	}
-	m := Msg{T: "target", IDs: []string{id}, Name: name, On: show, Held: r.holding()}
+	b := r.localBattery()
+	m := Msg{T: "target", IDs: []string{id}, Name: name, On: show, Held: r.holding(), Battery: &b}
 	if only != "" {
 		r.net.Send(only, m)
 		return

@@ -97,8 +97,29 @@ func run() {
 	dm = NewDeviceManager(store, em, engine.in, func() { bus.Publish(BusEvent{Type: "status"}) })
 	engine.grabbed = dm.AnyGrabbed
 	dm.onClose = engine.Reset
-	dm.onHost = router.KeydialConnected // the host is the machine that last had the Keydial
+	readBattery := make(chan struct{}, 1)
+	dm.onHost = func(on bool) {
+		router.KeydialConnected(on) // the host is the machine that last had the Keydial
+		select {
+		case readBattery <- struct{}{}:
+		default:
+		}
+	}
 	router.holds = dm.Connected
+	go func() { // the host reads the battery level and tells the others
+		for {
+			v := -1
+			if router.IsHost() && dm.Connected() {
+				v = batteryPercent(store.Get().Device)
+			}
+			router.SetBattery(v)
+			select {
+			case <-time.After(30 * time.Second):
+			case <-readBattery:
+				time.Sleep(2 * time.Second) // Windows/BlueZ read it just after connecting
+			}
+		}
+	}()
 	go func() { // release held keys on shutdown too
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -109,7 +130,7 @@ func run() {
 	go engine.Run()
 	go dm.Run()
 
-	srv := &Server{store: store, engine: engine, dm: dm, em: em, bus: bus, net: nw, router: router, addr: addr, token: newToken(), bat: -1}
+	srv := &Server{store: store, engine: engine, dm: dm, em: em, bus: bus, net: nw, router: router, addr: addr, token: newToken()}
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 
 	if os.Getenv("KEYBAR_NO_TRAY") != "" { // test copy: no tray icon

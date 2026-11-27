@@ -14,7 +14,7 @@ var procSetupDiGetDeviceProperty = windows.NewLazySystemDLL("setupapi.dll").NewP
 // devpkeyBatteryLevel: the battery level Windows reads from a Bluetooth LE
 // device's battery service (shown in Settings → Bluetooth & devices).
 var devpkeyBatteryLevel = windows.DEVPROPKEY{
-	FmtID: windows.DEVPROPGUID{0x104EA319, 0x6EE2, 0x4701, [8]byte{0xBD, 0x47, 0x8D, 0xDB, 0xF4, 0x25, 0xBB, 0xE5}},
+	FmtID: windows.DEVPROPGUID{Data1: 0x104EA319, Data2: 0x6EE2, Data3: 0x4701, Data4: [8]byte{0xBD, 0x47, 0x8D, 0xDB, 0xF4, 0x25, 0xBB, 0xE5}},
 	PID:   2,
 }
 

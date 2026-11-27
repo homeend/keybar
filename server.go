@@ -78,10 +78,6 @@ type Server struct {
 	router *Router
 	addr   string
 	token  string
-
-	batMu   sync.Mutex
-	bat     int
-	batTime time.Time
 }
 
 func newToken() string {
@@ -106,19 +102,9 @@ type Status struct {
 func (s *Server) status() Status {
 	return Status{
 		Version: version, Devices: s.dm.Devices(), Uinput: s.em.Ready(), UinputErr: s.em.Err(),
-		Grabbed: s.dm.AnyGrabbed(), Paused: s.dm.Paused(), Battery: s.battery(), ConfigPath: s.store.Path(), Panels: s.bus.Count(),
+		Grabbed: s.dm.AnyGrabbed(), Paused: s.dm.Paused(), Battery: s.router.Battery(), ConfigPath: s.store.Path(), Panels: s.bus.Count(),
 		Host: s.router.IsHost(),
 	}
-}
-
-func (s *Server) battery() int {
-	s.batMu.Lock()
-	defer s.batMu.Unlock()
-	if time.Since(s.batTime) > time.Minute {
-		s.bat = batteryPercent(s.store.Get().Device)
-		s.batTime = time.Now()
-	}
-	return s.bat
 }
 
 func (s *Server) Handler() http.Handler {

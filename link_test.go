@@ -453,6 +453,8 @@ func TestHostMoves(t *testing.T) {
 		t.Fatalf("after the move: B host=%v seen=%+v, A target=%q", rb.IsHost(), rb.Seen(), ra.Target())
 	}
 	waitFor(t, "A sees B as the host", func() bool { s := ra.Seen(); return s != nil && s.HostID == "bbbb" && !s.Here })
+	rb.SetBattery(55) // the host's battery level reaches the others
+	waitFor(t, "A shows B's battery level", func() bool { return ra.Battery() == 55 })
 	if err := rb.e.store.Link("k3", "KEY_C"); err != nil {
 		t.Fatal(err)
 	}

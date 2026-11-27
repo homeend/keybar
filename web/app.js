@@ -801,7 +801,10 @@ async function refreshStatus() {
   // The Keydial moved to or from this machine (Windows): the page is built for one role.
   if (typeof status.host === "boolean" && status.host === RECEIVER) { location.reload(); return; }
   const p = $("#status");
-  if (RECEIVER) { p.textContent = "Receives from paired machines"; p.className = "pill ok"; }
+  if (RECEIVER) {
+    p.textContent = "Receives from paired machines" + (status.battery >= 0 ? ` · Keydial 🔋 ${status.battery}%` : "");
+    p.className = "pill ok";
+  }
   else if (status.paused) { p.textContent = "Paused"; p.className = "pill"; }
   else if (status.devices.length) {
     p.textContent = "Keydial connected" + (status.battery >= 0 ? ` · 🔋 ${status.battery}%` : "");
