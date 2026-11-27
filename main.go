@@ -97,9 +97,8 @@ func run() {
 	dm = NewDeviceManager(store, em, engine.in, func() { bus.Publish(BusEvent{Type: "status"}) })
 	engine.grabbed = dm.AnyGrabbed
 	dm.onClose = engine.Reset
-	if !hostSupported {
-		dm.onHost = router.SetHost // the host is whichever machine has the Keydial
-	}
+	dm.onHost = router.KeydialConnected // the host is the machine that last had the Keydial
+	router.holds = dm.Connected
 	go func() { // release held keys on shutdown too
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)

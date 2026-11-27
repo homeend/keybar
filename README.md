@@ -36,8 +36,10 @@ layout a way back.
 
 ## Several computers
 One Keydial can control several computers on the same network. The computer it is
-plugged into (Linux, for now) reads it; Keybar on the other computers receives the
-presses and runs them with **their own** active layout.
+connected to (the *host*) reads it; Keybar on the other computers receives the
+presses and runs them with **their own** active layout. The host is the computer
+the Keydial last connected to: it stays the host while the Keydial sleeps, and
+when the Keydial connects to another computer, that one takes over.
 
 1. Run Keybar on both computers. They find each other by themselves
    (🖧 **Machines** → *Nearby*).
@@ -74,7 +76,8 @@ press = Ctrl+Alt+Win+F7); Keybar blocks those while the Keydial is connected:
 cd tools\keydialcfg
 go run . <mac> keybar   :: the Keydial's Bluetooth address, e.g. 20:25:03:11:6D:DE
 ```
-Then use **Learn all buttons** once on every machine that reads the Keydial.
+Then use **Learn all buttons** once, on the machine that has the Keydial; the
+links go to the other machines and move with the host.
 Huion's Keydial phone app (or a factory reset) restores the factory keys.
 
 Needs [Go](https://go.dev/dl/) and Git.

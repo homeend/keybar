@@ -22,11 +22,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// hostSupported: false = this machine is the host only while the Keydial is
-// connected to it (the DeviceManager reports that); otherwise it receives
-// presses from the machine that has it.
-const hostSupported = false
-
 const createNoWindow = 0x08000000
 
 func hidden(c *exec.Cmd) *exec.Cmd {

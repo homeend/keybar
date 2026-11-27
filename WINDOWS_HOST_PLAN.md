@@ -3,12 +3,17 @@
 Status (2026-11-27): **Windows reads the Keydial** (`device_windows.go`): buttons
 via a low-level keyboard hook that blocks the Keydial's Ctrl+Alt+Shift/Win+F-key
 combinations (the Keydial is remapped with `tools/keydialcfg`), the dial via the
-wheel hook + Raw Input. On Windows the host flag follows whether the Keydial is
-connected (`Router.SetHost`); the panel reloads when it changes, and the Learn
-dialog shows a small Keydial with the button to press.
-Still open: Linux is always the host, even when the Keydial is on Windows (both
-announce themselves); Windows battery level; a "Set up Keydial" button in the
-panel instead of `keydialcfg`; holding a button (the Keydial repeats the combo).
+wheel hook + Raw Input. **The host follows the Keydial on every OS** (step 3): a
+machine becomes the host when the Keydial connects to it
+(`Router.KeydialConnected`) and stays the host while the Keydial sleeps, until
+another machine says the Keydial is connected there (the `target` message carries
+`held`). Then it gives up its target, and takes links from the new host. If both
+have it for a moment, the one it leaves last stays the host; if neither has it,
+the higher machine ID stays. No machine is the host after a start until the
+Keydial connects. The panel reloads when the host changes, and the Learn dialog
+shows a small Keydial with the button to press.
+Still open: Windows battery level; a "Set up Keydial" button in the panel instead
+of `keydialcfg`; holding a button (the Keydial repeats the combo).
 The sections below are the original plan and findings.
 
 ## Where things stand
@@ -147,6 +152,10 @@ Linux is also correct on Windows. With approach C, map the vendor report bits to
 IDs or to these names.
 
 ### 3. The host is whichever machine has the Keydial (decided at runtime)
+
+Done (see the status at the top). Links travel with the host: a receiver stores the
+host's links, so a machine that becomes the host starts from the last set it got.
+This works because both OSes report the remapped Keydial with the same signatures.
 
 - Replace the `hostSupported` constant with "this machine has the Keydial connected
   now" (DeviceManager status). `Router.host` becomes dynamic.

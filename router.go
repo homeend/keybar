@@ -38,12 +38,15 @@ type Router struct {
 	seen *RemoteTarget
 
 	// host: this machine reads the Keydial, so it owns which button is linked
-	// to which slot and tells the others. Fixed on Linux; on Windows it follows
-	// whether the Keydial is connected (SetHost).
+	// to which slot and tells the others. It becomes the host when the Keydial
+	// connects here and stays the host while the Keydial sleeps, until another
+	// machine says the Keydial is connected there (see KeydialConnected).
 	host      atomic.Bool
+	holds     func() bool // the Keydial is connected here now (DeviceManager.Connected)
 	lmu       sync.Mutex
 	sentLinks string       // links last sent to every machine (JSON)
 	learnFor  *remoteLearn // another machine's panel is linking a slot
+	rival     string       // a machine that said it has the Keydial while it was still here
 }
 
 type remoteLearn struct {
@@ -84,16 +87,38 @@ type picker struct {
 const pickerTimeout = 10 * time.Second
 
 func NewRouter(e *Engine, n *Net, bus *Bus) *Router {
-	r := &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
-	r.host.Store(hostSupported && os.Getenv("KEYBAR_FAKE_OS") == "")
-	return r
+	return &Router{e: e, net: n, bus: bus, remote: map[string]func(){}}
 }
 
 // IsHost: this machine reads the Keydial now.
 func (r *Router) IsHost() bool { return r.host.Load() }
 
-// SetHost records that the Keydial was connected to (or left) this machine.
-// A new host tells the others where the Keydial points and sends its links.
+func (r *Router) holding() bool { return r.holds != nil && r.holds() }
+
+// KeydialConnected is called when the Keydial connects to this machine or
+// leaves it. Connecting makes this machine the host at once. Leaving changes
+// nothing (the Keydial also disconnects when it sleeps): the host moves only
+// when another machine says the Keydial is connected there.
+func (r *Router) KeydialConnected(on bool) {
+	r.lmu.Lock()
+	rival := r.rival
+	r.rival = ""
+	r.lmu.Unlock()
+	switch {
+	case on && r.IsHost():
+		r.announce("", false) // tell a machine that also thinks it is the host
+	case on:
+		r.SetHost(true)
+	case rival != "" && r.net != nil && r.net.Online(rival):
+		// It connected there before it left here: that machine is the host now.
+		log.Printf("the Keydial moved to %s", r.name(rival))
+		r.SetHost(false)
+	}
+}
+
+// SetHost makes this machine the host or stops it being one. A new host
+// tells the others where the Keydial points and sends its links. A machine
+// that stops being the host gives up its target and takes links from the new one.
 func (r *Router) SetHost(on bool) {
 	if os.Getenv("KEYBAR_FAKE_OS") != "" {
 		on = false // a test copy never reads the device
@@ -101,15 +126,51 @@ func (r *Router) SetHost(on bool) {
 	if r.host.Swap(on) == on {
 		return
 	}
-	log.Printf("this machine %s the Keydial", map[bool]string{true: "now has", false: "no longer has"}[on])
+	log.Printf("this machine %s the host", map[bool]string{true: "is now", false: "is no longer"}[on])
+	r.lmu.Lock()
+	r.sentLinks = ""
+	r.learnFor = nil
+	r.lmu.Unlock()
 	if on {
-		r.lmu.Lock()
-		r.sentLinks = ""
-		r.lmu.Unlock()
+		r.smu.Lock()
+		r.seen = nil // no longer receiving from another machine
+		r.smu.Unlock()
 		r.announce("", false)
 		r.shareLinks("")
+	} else {
+		r.mu.Lock()
+		from := r.target
+		r.target, r.prev = "", ""
+		r.mu.Unlock()
+		if from != "" && r.net != nil {
+			r.net.Send(from, Msg{T: "release_all"})
+		}
 	}
 	r.bus.Publish(BusEvent{Type: "status"})
+	r.bus.Publish(BusEvent{Type: "net"})
+}
+
+// otherHost handles a "target" message from another machine while this one
+// is the host. It returns true if this machine stopped being the host.
+// The machine that has the Keydial connected wins. If neither has it (both
+// had it while they couldn't reach each other, and it sleeps now), the
+// machine with the higher ID stays the host.
+func (r *Router) otherHost(peerID string, held bool) bool {
+	if r.holding() {
+		if held {
+			log.Printf("%s also has the Keydial; this machine stays the host until it leaves here", r.name(peerID))
+			r.lmu.Lock()
+			r.rival = peerID
+			r.lmu.Unlock()
+		}
+		return false
+	}
+	if !held && (r.net == nil || r.net.id.ID > peerID) {
+		return false
+	}
+	log.Printf("%s has the Keydial now", r.name(peerID))
+	r.SetHost(false)
+	return true
 }
 
 func (r *Router) Target() string {
@@ -403,6 +464,9 @@ func (r *Router) PeerMsg(peerID string, m Msg) *Msg {
 		if len(m.IDs) != 1 || r.net == nil {
 			break
 		}
+		if r.IsHost() && !r.otherHost(peerID, m.Held) {
+			break // this machine reads the Keydial: the other one's target doesn't apply
+		}
 		here := m.IDs[0] == r.net.id.ID
 		log.Printf("from %s: Keydial target is now %q (this machine: %v)", r.name(peerID), m.Name, here)
 		target := clip(m.Name, 64)
@@ -503,7 +567,7 @@ func (r *Router) announce(only string, show bool) {
 	if t == "" {
 		id, name = r.net.id.ID, r.net.id.Name
 	}
-	m := Msg{T: "target", IDs: []string{id}, Name: name, On: show}
+	m := Msg{T: "target", IDs: []string{id}, Name: name, On: show, Held: r.holding()}
 	if only != "" {
 		r.net.Send(only, m)
 		return

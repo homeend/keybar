@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -392,6 +393,86 @@ func TestLinksAndRemoteLearn(t *testing.T) {
 		case <-deadline:
 			t.Fatal("B's panel was not told the button was linked")
 		}
+	}
+}
+
+// The host is the machine that last had the Keydial: when it connects to
+// another machine, the old host stops, gives up its target and takes the new
+// host's links. Two machines that both have it: the one it leaves last stays.
+func TestHostMoves(t *testing.T) {
+	mk := func(id string, links map[string]string) (*ConfigStore, *Router, *Net, *atomic.Bool, string) {
+		store := LoadConfig(filepath.Join(t.TempDir(), "c.json"))
+		c := *store.Get()
+		c.Slots = append([]Slot(nil), c.Slots...)
+		for i := range c.Slots {
+			c.Slots[i].Trigger = links[c.Slots[i].ID]
+		}
+		if err := store.Set(&c); err != nil {
+			t.Fatal(err)
+		}
+		bus := NewBus()
+		e := NewEngine(store, &Emitter{}, bus)
+		r := NewRouter(e, nil, bus)
+		n, _, addr := testNet(t, id, r)
+		r.net, e.router = n, r
+		var holds atomic.Bool
+		r.holds = holds.Load
+		return store, r, n, &holds, addr
+	}
+	sa, ra, na, holdA, _ := mk("aaaa", map[string]string{"k1": "KEY_A"})
+	_, rb, nb, holdB, bAddr := mk("bbbb", map[string]string{"k1": "KEY_B"})
+	if ra.IsHost() || rb.IsHost() {
+		t.Fatal("no machine is the host before the Keydial connects")
+	}
+	holdA.Store(true)
+	ra.KeydialConnected(true)
+	if !ra.IsHost() {
+		t.Fatal("A has the Keydial, so it is the host")
+	}
+	na.peers.Put(Peer{ID: "bbbb", Name: "B", Public: nb.id.Public})
+	nb.peers.Put(Peer{ID: "aaaa", Name: "A", Public: na.id.Public})
+	go na.connect(*na.peers.Get("bbbb"), bAddr)
+	waitFor(t, "session", func() bool { return na.Online("bbbb") && nb.Online("aaaa") })
+	if err := ra.SetTarget("bbbb", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "B controlled from A", func() bool { s := rb.Seen(); return s != nil && s.Here && s.HostID == "aaaa" })
+
+	// Bluetooth sleep: A stays the host.
+	holdA.Store(false)
+	ra.KeydialConnected(false)
+	if !ra.IsHost() || ra.Target() != "bbbb" {
+		t.Fatalf("sleep changed the host: host=%v target=%q", ra.IsHost(), ra.Target())
+	}
+
+	// The Keydial wakes up on B.
+	holdB.Store(true)
+	rb.KeydialConnected(true)
+	waitFor(t, "A stops being the host", func() bool { return !ra.IsHost() })
+	if !rb.IsHost() || rb.Seen() != nil || ra.Target() != "" {
+		t.Fatalf("after the move: B host=%v seen=%+v, A target=%q", rb.IsHost(), rb.Seen(), ra.Target())
+	}
+	waitFor(t, "A sees B as the host", func() bool { s := ra.Seen(); return s != nil && s.HostID == "bbbb" && !s.Here })
+	if err := rb.e.store.Link("k3", "KEY_C"); err != nil {
+		t.Fatal(err)
+	}
+	rb.LinksChanged()
+	waitFor(t, "A takes B's links", func() bool { return sa.Get().Links()["k3"] == "KEY_C" })
+
+	// It connects to A before B notices it left: both have it for a moment.
+	holdA.Store(true)
+	ra.KeydialConnected(true)
+	if !ra.IsHost() {
+		t.Fatal("A has the Keydial again")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if !rb.IsHost() {
+		t.Fatal("B still has it too, so it stays the host")
+	}
+	holdB.Store(false)
+	rb.KeydialConnected(false) // now it left B
+	if rb.IsHost() || !ra.IsHost() {
+		t.Fatalf("after B lost it: A host=%v, B host=%v", ra.IsHost(), rb.IsHost())
 	}
 }
 
