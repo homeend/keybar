@@ -18,9 +18,6 @@ import (
 	"github.com/godbus/dbus/v5"
 )
 
-// hostSupported: this OS can read the Keydial itself (not only receive from another machine).
-const hostSupported = true
-
 func launchApp(id string) {
 	spawn("gtk-launch " + shellQuote(strings.TrimSuffix(id, ".desktop")))
 }

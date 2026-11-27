@@ -44,8 +44,10 @@ layout a way back.
 
 ## Several computers
 One Keydial can control several computers on the same network. The computer it is
-plugged into (Linux, for now) reads it; Keybar on the other computers receives the
-presses and runs them with **their own** active layout.
+connected to (the *host*) reads it; Keybar on the other computers receives the
+presses and runs them with **their own** active layout. The host is the computer
+the Keydial last connected to: it stays the host while the Keydial sleeps, and
+when the Keydial connects to another computer, that one takes over.
 
 1. Run Keybar on both computers. They find each other by themselves
    (🖧 **Machines** → *Nearby*).
@@ -71,7 +73,21 @@ paired machines can connect and all traffic is encrypted. Keys live in
 `identity.json` / `peers.json` (owner-only). Ports: UDP 47832 (discovery),
 TCP 47831 (paired machines).
 
-## Windows (receiver)
+## Windows
+Windows receives presses from the machine the Keydial is connected to, and can
+also read the Keydial itself when it is connected to Windows (Bluetooth): that
+machine then becomes the host. Windows doesn't let a program take over the
+Keydial's keys, so the Keydial is set up once to send keys no real keyboard
+sends (buttons 1–12 = Ctrl+Alt+Shift+F1…F12, 13–18 = Ctrl+Alt+Win+F1…F6, dial
+press = Ctrl+Alt+Win+F7); Keybar blocks those while the Keydial is connected:
+```bat
+cd tools\keydialcfg
+go run . <mac> keybar   :: the Keydial's Bluetooth address, e.g. 20:25:03:11:6D:DE
+```
+Then use **Learn all buttons** once, on the machine that has the Keydial; the
+links go to the other machines and move with the host.
+Huion's Keydial phone app (or a factory reset) restores the factory keys.
+
 Needs [Go](https://go.dev/dl/) and Git.
 ```bat
 git clone <this repo> keybar && cd keybar

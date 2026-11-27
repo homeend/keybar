@@ -514,8 +514,27 @@ function captureBox(initial, onCombo) {
 }
 
 // ---------- learning ----------
+// A small Keydial in the learn dialog (the big one is behind it): the button to
+// press pulses, the ones linked during this run are ticked.
+function renderLearnMap(target) {
+  const done = new Set(learn ? learn.done : []);
+  const state = id => id === target ? " target" : done.has(id) ? " done" : "";
+  const part = (id, cls, txt) => el("div", { class: `mpart ${cls}${state(id)}` }, txt);
+  const keys = el("div", { class: "mkeys" });
+  keys.style.gridTemplateColumns = `repeat(${cfg.columns || 4}, 1fr)`;
+  for (const s of cfg.slots.filter(s => s.group === "keys")) {
+    const k = el("div", { class: "mkey" + state(s.id) }, done.has(s.id) && s.id !== target ? "✓" : GLYPHS[`${s.x},${s.y}`] || "");
+    k.style.gridColumn = `${s.x + 1} / span ${s.w || 1}`;
+    k.style.gridRow = `${s.y + 1} / span ${s.h || 1}`;
+    keys.append(k);
+  }
+  $("#learnMap").replaceChildren(
+    el("div", { class: "mplate" }, el("div", { class: "mdial" }, part("dial_ccw", "ccw", "↺"), part("dial_press", "press", "●"), part("dial_cw", "cw", "↻"))),
+    keys);
+}
+
 async function startLearn(queue) {
-  learn = { queue: [...queue] };
+  learn = { queue: [...queue], done: [] };
   autoLearn = null;
   $("#learnDlg").showModal();
   nextLearn();
@@ -526,6 +545,7 @@ async function nextLearn() {
   learn.id = id;
   const b = byId(id);
   selected = id; renderDevice(); renderEditor();
+  renderLearnMap(id);
   $("#learnTitle").textContent = `Press “${b.label}” on your Keydial…`;
   const remaining = learn.queue.length;
   $("#learnSub").textContent = remaining ? `${remaining} more after this one.` : (id.startsWith("dial") ? "Turn or press the dial the matching way." : "It will be assigned to this slot.");
@@ -543,6 +563,7 @@ async function onLearned(sig, slot) {
   if (!id) return;
   const auto = !learn;
   autoLearn = null;
+  if (learn) learn.done.push(id);
   const b = byId(id);
   if (RECEIVER) { // the machine with the Keydial linked it and sent its links
     await reloadLinks();
@@ -777,6 +798,8 @@ $("#copyGo").onclick = async () => {
 // ---------- status & settings ----------
 async function refreshStatus() {
   try { status = await api("GET", "/api/status"); } catch { return; }
+  // The Keydial moved to or from this machine (Windows): the page is built for one role.
+  if (typeof status.host === "boolean" && status.host === RECEIVER) { location.reload(); return; }
   const p = $("#status");
   if (RECEIVER) { p.textContent = "Receives from paired machines"; p.className = "pill ok"; }
   else if (status.paused) { p.textContent = "Paused"; p.className = "pill"; }

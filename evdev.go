@@ -180,7 +180,8 @@ type DeviceManager struct {
 	emitter  *Emitter
 	out      chan<- InputEvent
 	onChange func()
-	onClose  func() // a device closed: release anything held
+	onClose  func()     // a device closed: release anything held
+	onHost   func(bool) // the Keydial connected here (true) or left (false)
 
 	mu     sync.Mutex
 	open   map[string]*openDevice
@@ -256,7 +257,7 @@ func (m *DeviceManager) scan() {
 	defer m.scanMu.Unlock()
 	match := m.store.Get().Device
 	grab := m.shouldGrab()
-	changed := false
+	changed, had := false, m.Connected()
 	for _, d := range listInputDevices() {
 		if !match.matches(d) {
 			continue
@@ -292,9 +293,19 @@ func (m *DeviceManager) scan() {
 			go m.read(od)
 		}
 	}
+	if changed && !had && m.onHost != nil {
+		m.onHost(true)
+	}
 	if changed && m.onChange != nil {
 		m.onChange()
 	}
+}
+
+// Connected: at least one of the Keydial's event nodes is open.
+func (m *DeviceManager) Connected() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.open) > 0
 }
 
 func (m *DeviceManager) read(od *openDevice) {
@@ -345,8 +356,12 @@ func (m *DeviceManager) read(od *openDevice) {
 	if m.open[od.path] == od {
 		delete(m.open, od.path)
 	}
+	gone := len(m.open) == 0
 	m.mu.Unlock()
 	log.Printf("closed %s", od.path)
+	if gone && m.onHost != nil {
+		m.onHost(false)
+	}
 	if m.onClose != nil {
 		m.onClose()
 	}

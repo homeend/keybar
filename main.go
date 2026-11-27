@@ -97,6 +97,8 @@ func run() {
 	dm = NewDeviceManager(store, em, engine.in, func() { bus.Publish(BusEvent{Type: "status"}) })
 	engine.grabbed = dm.AnyGrabbed
 	dm.onClose = engine.Reset
+	dm.onHost = router.KeydialConnected // the host is the machine that last had the Keydial
+	router.holds = dm.Connected
 	go func() { // release held keys on shutdown too
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -113,7 +115,7 @@ func run() {
 	if os.Getenv("KEYBAR_NO_TRAY") != "" { // test copy: no tray icon
 		select {}
 	}
-	systray.Run(func() { onTrayReady(addr, dm, em) }, func() {})
+	systray.Run(func() { onTrayReady(addr, dm, em, router) }, func() {})
 }
 
 // ensureRunning starts the background service if nothing answers on addr yet.
@@ -150,7 +152,7 @@ func recentlyOpened() bool {
 	return false
 }
 
-func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
+func onTrayReady(addr string, dm *DeviceManager, em *Emitter, router *Router) {
 	systray.SetTitle("Keybar")
 	systray.SetTooltip("Keybar — Keydial button mapper")
 	systray.SetIcon(trayIconBytes("idle"))
@@ -160,9 +162,6 @@ func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
 	systray.AddSeparator()
 	open := systray.AddMenuItem("Open control panel…", "")
 	pause := systray.AddMenuItemCheckbox("Pause mappings", "Give the Keydial back its factory keys", false)
-	if !hostSupported {
-		pause.Hide() // nothing to pause: presses come from another machine
-	}
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit Keybar", "")
 
@@ -187,12 +186,21 @@ func onTrayReady(addr string, dm *DeviceManager, em *Emitter) {
 		}
 	}()
 	go func() {
-		last := ""
+		last, pauseShown := "", true
 		for {
+			// Pause only means something while this machine reads the Keydial.
+			if host := router.IsHost(); host != pauseShown {
+				if host {
+					pause.Show()
+				} else {
+					pause.Hide()
+				}
+				pauseShown = host
+			}
 			st, text := "idle", "Keydial: not connected"
 			devs := dm.Devices()
 			switch {
-			case !hostSupported:
+			case !router.IsHost():
 				st, text = "on", "Keybar: receives from paired machines"
 			case !em.Ready():
 				st, text = "warn", "Needs setup: virtual input (uinput) not accessible"
